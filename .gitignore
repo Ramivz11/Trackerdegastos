@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+
+# Archivos sensibles / personales que NO deben subirse
+Contraseñas/
+*.txt
+
+# Artefactos de build de TypeScript
+*.tsbuildinfo

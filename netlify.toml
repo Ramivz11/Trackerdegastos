@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Redirige todas las rutas al index para que funcione el router (SPA).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
