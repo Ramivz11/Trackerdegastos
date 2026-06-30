@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Modal from '../components/Modal'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
@@ -26,6 +26,16 @@ export default function Recurring() {
   const { user } = useAuth()
   const [items, setItems] = useState<RecurringExpense[]>([])
   const [loading, setLoading] = useState(true)
+  const [payingId, setPayingId] = useState<string | null>(null)
+  const [flashId, setFlashId] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<number>()
+
+  function showToast(message: string) {
+    setToast(message)
+    clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(null), 2800)
+  }
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<RecurringExpense | null>(null)
@@ -104,31 +114,50 @@ export default function Recurring() {
 
   /** Marca como pagado: genera la transacción y avanza la fecha. */
   async function markPaid(r: RecurringExpense) {
-    if (!user) return
-    await createTransaction(
-      {
-        category_id: r.category_id,
-        amount: r.amount,
-        description: r.name,
-        transaction_date: todayISO(),
-        type: 'expense',
-      },
-      user.id,
-    )
-    if (r.frequency === 'once') {
-      await updateRecurring(r.id, { is_active: false })
-    } else {
-      await updateRecurring(r.id, {
-        next_due_date: nextDate(r.next_due_date, r.frequency),
-      })
+    if (!user || payingId) return
+    setPayingId(r.id)
+    try {
+      await createTransaction(
+        {
+          category_id: r.category_id,
+          amount: r.amount,
+          description: r.name,
+          transaction_date: todayISO(),
+          type: 'expense',
+        },
+        user.id,
+      )
+      let message: string
+      if (r.frequency === 'once') {
+        await updateRecurring(r.id, { is_active: false })
+        message = `✓ ${r.name} pagado (${formatMoney(Number(r.amount))})`
+      } else {
+        const next = nextDate(r.next_due_date, r.frequency)
+        await updateRecurring(r.id, { next_due_date: next })
+        message = `✓ ${r.name} pagado · próximo: ${formatDate(next)}`
+      }
+      showToast(message)
+      await load()
+      // Resalta la tarjeta actualizada un instante (si sigue visible).
+      setFlashId(r.id)
+      window.setTimeout(() => setFlashId(null), 1000)
+    } finally {
+      setPayingId(null)
     }
-    await load()
   }
 
   const active = items.filter((r) => r.is_active)
 
   return (
     <div>
+      {toast && (
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center px-4">
+          <div className="toast-in max-w-sm rounded-xl bg-emerald-600 px-4 py-3 text-center text-sm font-semibold text-white shadow-lg shadow-emerald-900/40">
+            {toast}
+          </div>
+        </div>
+      )}
+
       <header className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Pagos y recurrentes</h1>
         <button onClick={openNew} className="btn-primary px-3 py-2 text-sm">
@@ -158,7 +187,10 @@ export default function Recurring() {
             const overdue = days < 0
             const soon = days >= 0 && days <= 5
             return (
-              <div key={r.id} className="card">
+              <div
+                key={r.id}
+                className={`card ${flashId === r.id ? 'flash-ok' : ''}`}
+              >
                 <div className="flex items-center gap-3">
                   <span
                     className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
@@ -197,9 +229,10 @@ export default function Recurring() {
                 <div className="mt-3 flex gap-2">
                   <button
                     onClick={() => markPaid(r)}
-                    className="btn-primary flex-1 py-2 text-sm"
+                    disabled={payingId === r.id}
+                    className="btn-primary flex-1 py-2 text-sm disabled:opacity-70"
                   >
-                    ✓ Pagado
+                    {payingId === r.id ? 'Registrando…' : '✓ Pagado'}
                   </button>
                   <button
                     onClick={() => openEdit(r)}
