@@ -1,5 +1,8 @@
 export type TransactionType = 'expense' | 'income'
 
+/** Una categoría sirve para gastos o para ingresos, no para ambos. */
+export type CategoryKind = 'expense' | 'income'
+
 export type Frequency = 'once' | 'weekly' | 'monthly' | 'yearly'
 
 export interface Category {
@@ -8,6 +11,7 @@ export interface Category {
   name: string
   color: string
   icon: string
+  kind: CategoryKind
   monthly_budget: number | null
   is_favorite: boolean
   created_at: string

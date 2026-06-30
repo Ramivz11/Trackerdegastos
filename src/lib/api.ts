@@ -17,7 +17,10 @@ export async function fetchCategories(): Promise<Category[]> {
 }
 
 export async function createCategory(
-  c: Pick<Category, 'name' | 'color' | 'icon' | 'monthly_budget' | 'is_favorite'>,
+  c: Pick<
+    Category,
+    'name' | 'color' | 'icon' | 'kind' | 'monthly_budget' | 'is_favorite'
+  >,
   userId: string,
 ): Promise<void> {
   const { error } = await supabase

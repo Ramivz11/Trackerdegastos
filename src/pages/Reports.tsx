@@ -3,6 +3,7 @@ import {
   Bar,
   BarChart,
   Cell,
+  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -53,11 +54,11 @@ export default function Reports() {
   const current = currentMonth()
   const currentTxs = monthsData[current] ?? []
 
-  // Torta: gasto por categoría del mes actual.
-  const pieData = useMemo(() => {
+  // Agrupa por categoría las transacciones del tipo pedido (mes actual).
+  function byCategory(type: 'expense' | 'income') {
     const map = new Map<string, number>()
     for (const t of currentTxs) {
-      if (t.type !== 'expense' || !t.category_id) continue
+      if (t.type !== type || !t.category_id) continue
       map.set(t.category_id, (map.get(t.category_id) ?? 0) + Number(t.amount))
     }
     return [...map.entries()]
@@ -67,18 +68,31 @@ export default function Reports() {
         color: categoriesById[id]?.color ?? '#64748b',
       }))
       .sort((a, b) => b.value - a.value)
-  }, [currentTxs, categoriesById])
+  }
 
-  // Barras: gasto total por mes (últimos 6 meses).
+  // Torta: gasto por categoría del mes actual.
+  const pieData = useMemo(() => byCategory('expense'), [currentTxs, categoriesById])
+
+  // Torta: ingreso por categoría del mes actual.
+  const incomePieData = useMemo(
+    () => byCategory('income'),
+    [currentTxs, categoriesById],
+  )
+
+  // Barras: gasto e ingreso por mes (últimos 6 meses).
   const barData = useMemo(() => {
     return months.map((m) => {
       const txs = monthsData[m] ?? []
-      const total = txs
-        .filter((t) => t.type === 'expense')
-        .reduce((s, t) => s + Number(t.amount), 0)
+      let gasto = 0
+      let ingreso = 0
+      for (const t of txs) {
+        if (t.type === 'expense') gasto += Number(t.amount)
+        else ingreso += Number(t.amount)
+      }
       return {
         month: format(parseISO(m + '-01'), 'MMM', { locale: es }),
-        total,
+        gasto,
+        ingreso,
       }
     })
   }, [months, monthsData])
@@ -103,6 +117,7 @@ export default function Reports() {
   }, [categories, currentTxs])
 
   const totalSpent = pieData.reduce((s, d) => s + d.value, 0)
+  const totalIncome = incomePieData.reduce((s, d) => s + d.value, 0)
 
   return (
     <div>
@@ -177,10 +192,81 @@ export default function Reports() {
             )}
           </section>
 
-          {/* Barras mes a mes */}
+          {/* Torta de ingresos por categoría */}
           <section className="card">
             <h2 className="mb-2 font-semibold text-slate-200">
-              Gasto mensual (últimos 6 meses)
+              Ingreso por categoría (este mes)
+            </h2>
+            {incomePieData.length === 0 ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                Sin ingresos este mes.
+              </p>
+            ) : (
+              <>
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={incomePieData}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius={55}
+                        outerRadius={85}
+                        paddingAngle={2}
+                      >
+                        {incomePieData.map((d, i) => (
+                          <Cell key={i} fill={d.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        formatter={(v: number) => formatMoney(v)}
+                        contentStyle={{
+                          background: '#1e293b',
+                          border: 'none',
+                          borderRadius: 12,
+                          color: '#fff',
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="mt-2 space-y-1">
+                  {incomePieData.map((d) => (
+                    <div
+                      key={d.name}
+                      className="flex items-center justify-between text-sm"
+                    >
+                      <span className="flex items-center gap-2 text-slate-300">
+                        <span
+                          className="inline-block h-3 w-3 rounded-full"
+                          style={{ backgroundColor: d.color }}
+                        />
+                        {d.name}
+                      </span>
+                      <span className="text-slate-400">
+                        {formatMoney(d.value)} ·{' '}
+                        {totalIncome > 0
+                          ? Math.round((d.value / totalIncome) * 100)
+                          : 0}
+                        %
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 flex justify-between border-t border-white/5 pt-2 text-sm">
+                  <span className="text-slate-300">Total ingresos</span>
+                  <span className="font-semibold text-emerald-400">
+                    {formatMoney(totalIncome)}
+                  </span>
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* Barras mes a mes: gasto vs ingreso */}
+          <section className="card">
+            <h2 className="mb-2 font-semibold text-slate-200">
+              Gasto vs ingreso (últimos 6 meses)
             </h2>
             <div className="h-48">
               <ResponsiveContainer width="100%" height="100%">
@@ -202,7 +288,14 @@ export default function Reports() {
                       color: '#fff',
                     }}
                   />
-                  <Bar dataKey="total" fill="#6366f1" radius={[6, 6, 0, 0]} />
+                  <Legend
+                    formatter={(value) =>
+                      value === 'gasto' ? 'Gasto' : 'Ingreso'
+                    }
+                    wrapperStyle={{ fontSize: 12 }}
+                  />
+                  <Bar dataKey="gasto" fill="#ef4444" radius={[6, 6, 0, 0]} />
+                  <Bar dataKey="ingreso" fill="#22c55e" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

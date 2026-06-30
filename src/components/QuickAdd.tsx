@@ -13,8 +13,8 @@ interface QuickAddProps {
 }
 
 /**
- * Botón flotante "Gasto rápido": muestra las categorías más usadas como botones
- * grandes; al elegir una, solo pide el monto y guarda con fecha de hoy.
+ * Botón flotante "Gasto rápido": muestra las categorías de gasto más usadas como
+ * botones grandes; al elegir una, solo pide el monto y guarda con fecha de hoy.
  */
 export default function QuickAdd({ onSaved }: QuickAddProps) {
   const { user } = useAuth()
@@ -32,16 +32,18 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     }
   }, [open])
 
-  // Categorías ordenadas: primero las más usadas, luego favoritas, luego resto.
+  // Solo categorías de gasto, ordenadas: más usadas, luego favoritas, luego resto.
   const ordered = useMemo(() => {
     const rank = new Map(topIds.map((id, i) => [id, i]))
-    return [...categories].sort((a, b) => {
-      const ra = rank.has(a.id) ? rank.get(a.id)! : 999
-      const rb = rank.has(b.id) ? rank.get(b.id)! : 999
-      if (ra !== rb) return ra - rb
-      if (a.is_favorite !== b.is_favorite) return a.is_favorite ? -1 : 1
-      return a.name.localeCompare(b.name)
-    })
+    return categories
+      .filter((c) => c.kind !== 'income')
+      .sort((a, b) => {
+        const ra = rank.has(a.id) ? rank.get(a.id)! : 999
+        const rb = rank.has(b.id) ? rank.get(b.id)! : 999
+        if (ra !== rb) return ra - rb
+        if (a.is_favorite !== b.is_favorite) return a.is_favorite ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
   }, [categories, topIds])
 
   const shortcuts = showAll ? ordered : ordered.slice(0, 6)
@@ -99,6 +101,11 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         {!selected ? (
           <>
             <p className="mb-3 text-sm text-slate-400">Elegí una categoría</p>
+            {shortcuts.length === 0 ? (
+              <p className="text-sm text-slate-500">
+                No tenés categorías de gasto todavía.
+              </p>
+            ) : (
             <div className="grid grid-cols-3 gap-3">
               {shortcuts.map((c) => (
                 <button
@@ -119,6 +126,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
                 </button>
               ))}
             </div>
+            )}
             {ordered.length > 6 && (
               <button
                 type="button"

@@ -2,7 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 
 const NAV = [
   { to: '/', label: 'Inicio', icon: '🏠', end: true },
-  { to: '/transacciones', label: 'Gastos', icon: '🧾', end: false },
+  { to: '/transacciones', label: 'Movimientos', icon: '🧾', end: false },
   { to: '/recurrentes', label: 'Pagos', icon: '🔔', end: false },
   { to: '/reportes', label: 'Reportes', icon: '📊', end: false },
   { to: '/ajustes', label: 'Ajustes', icon: '⚙️', end: false },

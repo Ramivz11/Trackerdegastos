@@ -4,13 +4,13 @@ import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { createCategory, deleteCategory, updateCategory } from '../lib/api'
 import { formatMoney } from '../lib/format'
-import type { Category } from '../types'
+import type { Category, CategoryKind } from '../types'
 
 const COLORS = [
   '#6366f1', '#f97316', '#22c55e', '#3b82f6', '#eab308',
   '#ef4444', '#a855f7', '#14b8a6', '#ec4899', '#64748b',
 ]
-const ICONS = ['💸', '🍔', '🛒', '🚌', '💡', '💊', '🎉', '🏠', '👕', '📚', '🎮', '✈️', '🐶', '☕', '⛽']
+const ICONS = ['💸', '🍔', '🛒', '🚌', '💡', '💊', '🎉', '🏠', '👕', '📚', '🎮', '✈️', '🐶', '☕', '⛽', '💰', '🥇', '🤖', '💵', '💳', '🏦', '📈']
 
 export default function Categories() {
   const { categories, reloadCategories, loadingCategories } = useData()
@@ -21,15 +21,20 @@ export default function Categories() {
   const [name, setName] = useState('')
   const [color, setColor] = useState(COLORS[0])
   const [icon, setIcon] = useState(ICONS[0])
+  const [kind, setKind] = useState<CategoryKind>('expense')
   const [budget, setBudget] = useState('')
   const [favorite, setFavorite] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  function openNew() {
+  const expenseCats = categories.filter((c) => c.kind !== 'income')
+  const incomeCats = categories.filter((c) => c.kind === 'income')
+
+  function openNew(forKind: CategoryKind = 'expense') {
     setEditing(null)
     setName('')
     setColor(COLORS[0])
     setIcon(ICONS[0])
+    setKind(forKind)
     setBudget('')
     setFavorite(false)
     setOpen(true)
@@ -40,6 +45,7 @@ export default function Categories() {
     setName(c.name)
     setColor(c.color)
     setIcon(c.icon)
+    setKind(c.kind)
     setBudget(c.monthly_budget != null ? String(c.monthly_budget) : '')
     setFavorite(c.is_favorite)
     setOpen(true)
@@ -53,7 +59,9 @@ export default function Categories() {
         name: name.trim(),
         color,
         icon,
-        monthly_budget: budget ? parseFloat(budget) : null,
+        kind,
+        // El presupuesto solo aplica a gastos.
+        monthly_budget: kind === 'income' ? null : budget ? parseFloat(budget) : null,
         is_favorite: favorite,
       }
       if (editing) {
@@ -75,11 +83,49 @@ export default function Categories() {
     await reloadCategories()
   }
 
+  function renderCard(c: Category) {
+    return (
+      <div key={c.id} className="card flex items-center gap-3">
+        <span
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
+          style={{ backgroundColor: c.color + '33' }}
+        >
+          {c.icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1 font-semibold text-slate-100">
+            {c.name}
+            {c.is_favorite && <span title="Favorita">⭐</span>}
+          </div>
+          <div className="text-sm text-slate-400">
+            {c.kind === 'income'
+              ? 'Ingreso'
+              : c.monthly_budget != null
+                ? `Presupuesto: ${formatMoney(c.monthly_budget)}`
+                : 'Sin presupuesto'}
+          </div>
+        </div>
+        <button
+          onClick={() => openEdit(c)}
+          className="rounded-lg px-2 py-1 text-slate-400 hover:text-slate-100"
+        >
+          ✏️
+        </button>
+        <button
+          onClick={() => remove(c)}
+          className="rounded-lg px-2 py-1 text-slate-400 hover:text-red-400"
+        >
+          🗑️
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div>
       <header className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Categorías</h1>
-        <button onClick={openNew} className="btn-primary px-3 py-2 text-sm">
+        <button onClick={() => openNew('expense')} className="btn-primary px-3 py-2 text-sm">
           + Nueva
         </button>
       </header>
@@ -87,40 +133,44 @@ export default function Categories() {
       {loadingCategories ? (
         <p className="text-slate-400">Cargando…</p>
       ) : (
-        <div className="space-y-2">
-          {categories.map((c) => (
-            <div key={c.id} className="card flex items-center gap-3">
-              <span
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
-                style={{ backgroundColor: c.color + '33' }}
-              >
-                {c.icon}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1 font-semibold text-slate-100">
-                  {c.name}
-                  {c.is_favorite && <span title="Favorita">⭐</span>}
-                </div>
-                <div className="text-sm text-slate-400">
-                  {c.monthly_budget != null
-                    ? `Presupuesto: ${formatMoney(c.monthly_budget)}`
-                    : 'Sin presupuesto'}
-                </div>
-              </div>
+        <div className="space-y-6">
+          <section>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-300">💸 Gastos</h2>
               <button
-                onClick={() => openEdit(c)}
-                className="rounded-lg px-2 py-1 text-slate-400 hover:text-slate-100"
+                onClick={() => openNew('expense')}
+                className="text-xs font-medium text-brand"
               >
-                ✏️
-              </button>
-              <button
-                onClick={() => remove(c)}
-                className="rounded-lg px-2 py-1 text-slate-400 hover:text-red-400"
-              >
-                🗑️
+                + Agregar
               </button>
             </div>
-          ))}
+            <div className="space-y-2">
+              {expenseCats.length === 0 ? (
+                <p className="card text-sm text-slate-500">Sin categorías de gasto.</p>
+              ) : (
+                expenseCats.map(renderCard)
+              )}
+            </div>
+          </section>
+
+          <section>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-300">💰 Ingresos</h2>
+              <button
+                onClick={() => openNew('income')}
+                className="text-xs font-medium text-brand"
+              >
+                + Agregar
+              </button>
+            </div>
+            <div className="space-y-2">
+              {incomeCats.length === 0 ? (
+                <p className="card text-sm text-slate-500">Sin categorías de ingreso.</p>
+              ) : (
+                incomeCats.map(renderCard)
+              )}
+            </div>
+          </section>
         </div>
       )}
 
@@ -131,26 +181,48 @@ export default function Categories() {
       >
         <div className="space-y-4">
           <div>
+            <label className="label">Tipo</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setKind('expense')}
+                className={`btn ${kind === 'expense' ? 'bg-red-500/80 text-white' : 'bg-slate-700/60 text-slate-300'}`}
+              >
+                Gasto
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('income')}
+                className={`btn ${kind === 'income' ? 'bg-emerald-500/80 text-white' : 'bg-slate-700/60 text-slate-300'}`}
+              >
+                Ingreso
+              </button>
+            </div>
+          </div>
+
+          <div>
             <label className="label">Nombre</label>
             <input
               className="input"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Ej: Comida"
+              placeholder={kind === 'income' ? 'Ej: Sueldo' : 'Ej: Comida'}
             />
           </div>
 
-          <div>
-            <label className="label">Presupuesto mensual (opcional)</label>
-            <input
-              className="input"
-              type="number"
-              inputMode="decimal"
-              value={budget}
-              onChange={(e) => setBudget(e.target.value)}
-              placeholder="Ej: 50000"
-            />
-          </div>
+          {kind === 'expense' && (
+            <div>
+              <label className="label">Presupuesto mensual (opcional)</label>
+              <input
+                className="input"
+                type="number"
+                inputMode="decimal"
+                value={budget}
+                onChange={(e) => setBudget(e.target.value)}
+                placeholder="Ej: 50000"
+              />
+            </div>
+          )}
 
           <div>
             <label className="label">Ícono</label>
@@ -195,7 +267,7 @@ export default function Categories() {
               className="h-5 w-5 rounded accent-brand"
             />
             <span className="text-sm text-slate-300">
-              Mostrar como acceso directo en gasto rápido
+              Mostrar como acceso directo en carga rápida
             </span>
           </label>
 

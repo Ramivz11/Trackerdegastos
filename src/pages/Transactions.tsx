@@ -56,6 +56,27 @@ export default function Transactions() {
     [items, filterCat],
   )
 
+  // En el modal solo se ofrecen categorías que coincidan con el tipo elegido.
+  const modalCats = useMemo(
+    () =>
+      type === 'income'
+        ? categories.filter((c) => c.kind === 'income')
+        : categories.filter((c) => c.kind !== 'income'),
+    [categories, type],
+  )
+
+  function changeType(next: TransactionType) {
+    setType(next)
+    // Si la categoría actual no pertenece al nuevo tipo, la limpiamos.
+    const pool =
+      next === 'income'
+        ? categories.filter((c) => c.kind === 'income')
+        : categories.filter((c) => c.kind !== 'income')
+    if (!pool.some((c) => c.id === categoryId)) {
+      setCategoryId(pool[0]?.id ?? '')
+    }
+  }
+
   const totals = useMemo(() => {
     let expense = 0
     let income = 0
@@ -70,7 +91,7 @@ export default function Transactions() {
     setEditing(null)
     setType('expense')
     setAmount('')
-    setCategoryId(categories[0]?.id ?? '')
+    setCategoryId(categories.find((c) => c.kind !== 'income')?.id ?? '')
     setDate(todayISO())
     setDescription('')
     setOpen(true)
@@ -117,7 +138,7 @@ export default function Transactions() {
   return (
     <div>
       <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Gastos</h1>
+        <h1 className="text-2xl font-bold text-white">Movimientos</h1>
         <button onClick={openNew} className="btn-primary px-3 py-2 text-sm">
           + Agregar
         </button>
@@ -236,14 +257,14 @@ export default function Transactions() {
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={() => setType('expense')}
+              onClick={() => changeType('expense')}
               className={`btn ${type === 'expense' ? 'bg-red-500/80 text-white' : 'bg-slate-700/60 text-slate-300'}`}
             >
               Gasto
             </button>
             <button
               type="button"
-              onClick={() => setType('income')}
+              onClick={() => changeType('income')}
               className={`btn ${type === 'income' ? 'bg-emerald-500/80 text-white' : 'bg-slate-700/60 text-slate-300'}`}
             >
               Ingreso
@@ -270,7 +291,7 @@ export default function Transactions() {
               onChange={(e) => setCategoryId(e.target.value)}
             >
               <option value="">Sin categoría</option>
-              {categories.map((c) => (
+              {modalCats.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.icon} {c.name}
                 </option>
