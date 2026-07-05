@@ -9,16 +9,23 @@ import {
   formatDate,
   formatMoney,
   formatMonth,
+  toArs,
   todayISO,
 } from '../lib/format'
 import type { RecurringExpense, TransactionWithCategory } from '../types'
+
+function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split('-').map(Number)
+  const d = new Date(y, m - 1 + delta, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
 
 export default function Dashboard() {
   const { categories } = useData()
   const [txs, setTxs] = useState<TransactionWithCategory[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [loading, setLoading] = useState(true)
-  const month = currentMonth()
+  const [month, setMonth] = useState(currentMonth())
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -43,7 +50,7 @@ export default function Dashboard() {
     let income = 0
     const byCategory = new Map<string, number>()
     for (const t of txs) {
-      const amt = Number(t.amount)
+      const amt = toArs(Number(t.amount), t.currency, t.ars_rate)
       if (t.type === 'expense') {
         spent += amt
         if (t.category_id)
@@ -54,6 +61,17 @@ export default function Dashboard() {
     }
     return { spent, income, byCategory }
   }, [txs])
+
+  // Promedio diario y proyección de fin de mes (solo para el mes en curso).
+  const projection = useMemo(() => {
+    const isCurrent = month === currentMonth()
+    const [y, m] = month.split('-').map(Number)
+    const daysInMonth = new Date(y, m, 0).getDate()
+    const dayOfMonth = isCurrent ? new Date().getDate() : daysInMonth
+    const avgPerDay = dayOfMonth > 0 ? spent / dayOfMonth : 0
+    const projected = avgPerDay * daysInMonth
+    return { isCurrent, avgPerDay, projected, daysInMonth, dayOfMonth }
+  }, [month, spent])
 
   // Alertas de presupuesto: categorías cerca o por encima del límite.
   const budgetAlerts = useMemo(() => {
@@ -95,20 +113,60 @@ export default function Dashboard() {
 
   return (
     <div>
-      <header className="mb-4">
+      <header className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Hola 👋</h1>
-        <p className="text-sm capitalize text-slate-400">{formatMonth(month)}</p>
+        <div className="flex items-center gap-1 rounded-xl bg-slate-800/60 p-1">
+          <button
+            onClick={() => setMonth(shiftMonth(month, -1))}
+            className="rounded-lg px-2 py-1 text-slate-300"
+            aria-label="Mes anterior"
+          >
+            ‹
+          </button>
+          <span className="min-w-[7rem] text-center text-sm font-semibold capitalize text-slate-100">
+            {formatMonth(month)}
+          </span>
+          <button
+            onClick={() => setMonth(shiftMonth(month, 1))}
+            className="rounded-lg px-2 py-1 text-slate-300"
+            aria-label="Mes siguiente"
+          >
+            ›
+          </button>
+        </div>
       </header>
 
       {/* Resumen del mes */}
       <div className="card mb-4 bg-gradient-to-br from-brand to-brand-dark">
-        <div className="text-sm text-white/80">Gastado este mes</div>
+        <div className="text-sm text-white/80">
+          {projection.isCurrent ? 'Gastado este mes' : 'Gastado en el mes'}
+        </div>
         <div className="text-4xl font-bold text-white">{formatMoney(spent)}</div>
         <div className="mt-2 text-sm text-white/80">
           Ingresos: {formatMoney(income)} · Balance:{' '}
           <span className="font-semibold">{formatMoney(income - spent)}</span>
         </div>
       </div>
+
+      {/* Promedio diario y proyección */}
+      {spent > 0 && (
+        <div className="mb-4 grid grid-cols-2 gap-3">
+          <div className="card">
+            <div className="text-xs text-slate-400">Promedio por día</div>
+            <div className="text-lg font-bold text-slate-100">
+              {formatMoney(projection.avgPerDay)}
+            </div>
+          </div>
+          <div className="card">
+            <div className="text-xs text-slate-400">
+              {projection.isCurrent ? 'Proyección fin de mes' : 'Total del mes'}
+            </div>
+            <div className="text-lg font-bold text-slate-100">
+              {formatMoney(projection.projected)}
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-slate-400">Cargando…</p>

@@ -64,6 +64,7 @@ export async function runRecurringCatchUp(userId: string): Promise<number> {
     const rows = inserts.map((i) => ({
       user_id: userId,
       category_id: rule.category_id,
+      account_id: rule.account_id,
       amount: rule.amount,
       description: rule.name,
       transaction_date: i.date,

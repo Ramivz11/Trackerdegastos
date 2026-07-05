@@ -2,6 +2,7 @@ import { format, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
 
 const CURRENCY_KEY = 'tracker:currency'
+const USD_RATE_KEY = 'tracker:usdRate'
 
 export function getCurrency(): string {
   return localStorage.getItem(CURRENCY_KEY) ?? 'ARS'
@@ -9,6 +10,32 @@ export function getCurrency(): string {
 
 export function setCurrency(code: string) {
   localStorage.setItem(CURRENCY_KEY, code)
+}
+
+/** Cotización del dólar (cuántos ARS vale 1 USD). Editable en Ajustes. */
+export function getUsdRate(): number {
+  const v = Number(localStorage.getItem(USD_RATE_KEY))
+  return v > 0 ? v : 1000
+}
+
+export function setUsdRate(rate: number) {
+  localStorage.setItem(USD_RATE_KEY, String(rate))
+}
+
+/** ARS por 1 unidad de la moneda dada, según la cotización guardada. */
+export function rateFor(currency: string): number {
+  return currency === 'USD' ? getUsdRate() : 1
+}
+
+/**
+ * Equivalente en ARS de un monto en su moneda, usando el ars_rate guardado en
+ * la transacción (o la cotización actual si no hay uno). Sirve para sumar
+ * montos de distintas monedas en reportes y totales.
+ */
+export function toArs(amount: number, currency: string, arsRate?: number): number {
+  if (currency !== 'USD') return amount
+  const rate = arsRate && arsRate > 0 ? arsRate : getUsdRate()
+  return amount * rate
 }
 
 export function formatMoney(amount: number, currency = getCurrency()): string {

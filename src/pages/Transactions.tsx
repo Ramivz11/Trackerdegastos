@@ -9,8 +9,16 @@ import {
   fetchTransactionsByMonth,
   updateTransaction,
 } from '../lib/api'
-import { currentMonth, formatDate, formatMoney, formatMonth, todayISO } from '../lib/format'
-import type { TransactionType, TransactionWithCategory } from '../types'
+import {
+  currentMonth,
+  formatDate,
+  formatMoney,
+  formatMonth,
+  rateFor,
+  toArs,
+  todayISO,
+} from '../lib/format'
+import type { Currency, TransactionType, TransactionWithCategory } from '../types'
 
 function shiftMonth(month: string, delta: number): string {
   const [y, m] = month.split('-').map(Number)
@@ -19,18 +27,22 @@ function shiftMonth(month: string, delta: number): string {
 }
 
 export default function Transactions() {
-  const { categories, categoriesById } = useData()
+  const { categories, categoriesById, accounts, accountsById } = useData()
   const { user } = useAuth()
   const [month, setMonth] = useState(currentMonth())
   const [items, setItems] = useState<TransactionWithCategory[]>([])
   const [loading, setLoading] = useState(true)
   const [filterCat, setFilterCat] = useState<string>('all')
+  const [filterType, setFilterType] = useState<'all' | TransactionType>('all')
+  const [filterAccount, setFilterAccount] = useState<string>('all')
+  const [search, setSearch] = useState('')
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<TransactionWithCategory | null>(null)
   const [type, setType] = useState<TransactionType>('expense')
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [accountId, setAccountId] = useState('')
   const [date, setDate] = useState(todayISO())
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
@@ -48,13 +60,20 @@ export default function Transactions() {
     void load()
   }, [load])
 
-  const filtered = useMemo(
-    () =>
-      filterCat === 'all'
-        ? items
-        : items.filter((t) => t.category_id === filterCat),
-    [items, filterCat],
-  )
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return items.filter((t) => {
+      if (filterType !== 'all' && t.type !== filterType) return false
+      if (filterCat !== 'all' && t.category_id !== filterCat) return false
+      if (filterAccount !== 'all' && t.account_id !== filterAccount) return false
+      if (q) {
+        const cat = t.category_id ? categoriesById[t.category_id] : null
+        const hay = `${t.description ?? ''} ${cat?.name ?? ''}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+  }, [items, filterType, filterCat, filterAccount, search, categoriesById])
 
   // En el modal solo se ofrecen categorías que coincidan con el tipo elegido.
   const modalCats = useMemo(
@@ -81,8 +100,9 @@ export default function Transactions() {
     let expense = 0
     let income = 0
     for (const t of filtered) {
-      if (t.type === 'expense') expense += Number(t.amount)
-      else income += Number(t.amount)
+      const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
+      if (t.type === 'expense') expense += ars
+      else income += ars
     }
     return { expense, income }
   }, [filtered])
@@ -92,6 +112,7 @@ export default function Transactions() {
     setType('expense')
     setAmount('')
     setCategoryId(categories.find((c) => c.kind !== 'income')?.id ?? '')
+    setAccountId(accounts[0]?.id ?? '')
     setDate(todayISO())
     setDescription('')
     setOpen(true)
@@ -102,6 +123,7 @@ export default function Transactions() {
     setType(t.type)
     setAmount(String(t.amount))
     setCategoryId(t.category_id ?? '')
+    setAccountId(t.account_id ?? '')
     setDate(t.transaction_date)
     setDescription(t.description ?? '')
     setOpen(true)
@@ -113,9 +135,13 @@ export default function Transactions() {
     if (isNaN(value) || value <= 0) return
     setSaving(true)
     try {
+      const currency: Currency = accountsById[accountId]?.currency ?? 'ARS'
       const payload = {
         category_id: categoryId || null,
+        account_id: accountId || null,
         amount: value,
+        currency,
+        ars_rate: rateFor(currency),
         description: description.trim() || null,
         transaction_date: date,
         type,
@@ -179,19 +205,68 @@ export default function Transactions() {
         </div>
       </div>
 
-      {/* Filtro por categoría */}
-      <select
-        className="input mb-4"
-        value={filterCat}
-        onChange={(e) => setFilterCat(e.target.value)}
-      >
-        <option value="all">Todas las categorías</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.icon} {c.name}
-          </option>
+      {/* Buscador */}
+      <input
+        className="input mb-3"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="🔍 Buscar por nota o categoría"
+      />
+
+      {/* Filtro por tipo */}
+      <div className="mb-3 grid grid-cols-3 gap-2">
+        {(
+          [
+            ['all', 'Todos'],
+            ['expense', 'Egresos'],
+            ['income', 'Ingresos'],
+          ] as [typeof filterType, string][]
+        ).map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => setFilterType(val)}
+            className={`btn py-2 text-sm ${
+              filterType === val
+                ? val === 'expense'
+                  ? 'bg-red-500/80 text-white'
+                  : val === 'income'
+                    ? 'bg-emerald-500/80 text-white'
+                    : 'bg-brand text-white'
+                : 'bg-slate-700/60 text-slate-300'
+            }`}
+          >
+            {label}
+          </button>
         ))}
-      </select>
+      </div>
+
+      {/* Filtros por categoría y cuenta */}
+      <div className="mb-4 grid grid-cols-2 gap-2">
+        <select
+          className="input"
+          value={filterCat}
+          onChange={(e) => setFilterCat(e.target.value)}
+        >
+          <option value="all">Todas las categorías</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.icon} {c.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className="input"
+          value={filterAccount}
+          onChange={(e) => setFilterAccount(e.target.value)}
+        >
+          <option value="all">Todas las cuentas</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.icon} {a.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {/* Lista */}
       {loading ? (
@@ -204,6 +279,7 @@ export default function Transactions() {
         <div className="space-y-2">
           {filtered.map((t) => {
             const cat = t.category_id ? categoriesById[t.category_id] : null
+            const acc = t.account_id ? accountsById[t.account_id] : null
             return (
               <button
                 key={t.id}
@@ -224,9 +300,10 @@ export default function Transactions() {
                   <div className="truncate font-semibold text-slate-100">
                     {t.description || cat?.name || 'Sin categoría'}
                   </div>
-                  <div className="text-sm text-slate-400">
+                  <div className="truncate text-sm text-slate-400">
                     {formatDate(t.transaction_date)}
                     {cat && t.description ? ` · ${cat.name}` : ''}
+                    {acc ? ` · ${acc.icon} ${acc.name}` : ''}
                   </div>
                 </div>
                 <div
@@ -235,7 +312,7 @@ export default function Transactions() {
                   }`}
                 >
                   {t.type === 'expense' ? '-' : '+'}
-                  {formatMoney(Number(t.amount))}
+                  {formatMoney(Number(t.amount), t.currency)}
                 </div>
               </button>
             )
@@ -298,6 +375,26 @@ export default function Transactions() {
               ))}
             </select>
           </div>
+
+          {accounts.length > 0 && (
+            <div>
+              <label className="label">
+                {type === 'income' ? 'Cuenta que recibe' : 'Cuenta / medio de pago'}
+              </label>
+              <select
+                className="input"
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+              >
+                <option value="">Sin cuenta</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.icon} {a.name} ({a.currency})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="label">Fecha</label>

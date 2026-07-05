@@ -4,8 +4,10 @@ import AmountKeypad from './AmountKeypad'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { createTransaction, fetchTopCategoryIds } from '../lib/api'
-import { todayISO } from '../lib/format'
+import { rateFor, todayISO } from '../lib/format'
 import type { Category } from '../types'
+
+const LAST_ACCOUNT_KEY = 'tracker:lastAccount'
 
 interface QuickAddProps {
   /** Se llama tras registrar un gasto, para refrescar la pantalla actual. */
@@ -18,12 +20,13 @@ interface QuickAddProps {
  */
 export default function QuickAdd({ onSaved }: QuickAddProps) {
   const { user } = useAuth()
-  const { categories } = useData()
+  const { categories, accounts } = useData()
   const [open, setOpen] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const [topIds, setTopIds] = useState<string[]>([])
   const [selected, setSelected] = useState<Category | null>(null)
   const [amount, setAmount] = useState('')
+  const [accountId, setAccountId] = useState<string>('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -31,6 +34,15 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
       fetchTopCategoryIds().then(setTopIds).catch(() => setTopIds([]))
     }
   }, [open])
+
+  // Cuenta por defecto: la última usada, o la primera disponible.
+  useEffect(() => {
+    if (!accountId && accounts.length > 0) {
+      const last = localStorage.getItem(LAST_ACCOUNT_KEY)
+      const found = accounts.find((a) => a.id === last)
+      setAccountId(found ? found.id : accounts[0].id)
+    }
+  }, [accounts, accountId])
 
   // Solo categorías de gasto, ordenadas: más usadas, luego favoritas, luego resto.
   const ordered = useMemo(() => {
@@ -59,22 +71,29 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     reset()
   }
 
+  const account = accounts.find((a) => a.id === accountId) ?? null
+
   async function save() {
     if (!user || !selected) return
     const value = parseFloat(amount)
     if (isNaN(value) || value <= 0) return
     setSaving(true)
     try {
+      const currency = account?.currency ?? 'ARS'
       await createTransaction(
         {
           category_id: selected.id,
+          account_id: account?.id ?? null,
           amount: value,
+          currency,
+          ars_rate: rateFor(currency),
           description: null,
           transaction_date: todayISO(),
           type: 'expense',
         },
         user.id,
       )
+      if (account) localStorage.setItem(LAST_ACCOUNT_KEY, account.id)
       close()
       onSaved?.()
     } finally {
@@ -140,6 +159,30 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         ) : (
           <>
             <AmountKeypad value={amount} onChange={setAmount} />
+
+            {accounts.length > 0 && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium text-slate-400">Pagué con</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {accounts.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setAccountId(a.id)}
+                      className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition active:scale-95 ${
+                        accountId === a.id
+                          ? 'bg-brand text-white'
+                          : 'bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      <span>{a.icon}</span>
+                      <span className="truncate">{a.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mt-4 flex gap-2">
               <button
                 type="button"

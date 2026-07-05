@@ -1,30 +1,14 @@
 import { useState } from 'react'
 import Modal from '../components/Modal'
+import IconColorPicker from '../components/IconColorPicker'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { createCategory, deleteCategory, updateCategory } from '../lib/api'
 import { formatMoney } from '../lib/format'
 import type { Category, CategoryKind } from '../types'
 
-const COLORS = [
-  '#6366f1', '#f97316', '#22c55e', '#3b82f6', '#eab308',
-  '#ef4444', '#a855f7', '#14b8a6', '#ec4899', '#64748b',
-]
-const ICONS = ['💸', '🍔', '🛒', '🚌', '💡', '💊', '🎉', '🏠', '👕', '📚', '🎮', '✈️', '🐶', '☕', '⛽', '💰', '🥇', '🤖', '💵', '💳', '🏦', '📈']
-
-// Deja solo el último emoji/grafema escrito, para que el input acepte cualquier
-// emoji del teclado de iOS pero guarde uno solo.
-function lastGrapheme(value: string): string {
-  if (!value) return ''
-  const Segmenter = (Intl as any).Segmenter
-  if (Segmenter) {
-    const seg = new Segmenter(undefined, { granularity: 'grapheme' })
-    const parts = Array.from(seg.segment(value), (s: any) => s.segment as string)
-    return parts[parts.length - 1] ?? ''
-  }
-  const arr = Array.from(value)
-  return arr[arr.length - 1] ?? ''
-}
+const DEFAULT_COLOR = '#6366f1'
+const DEFAULT_ICON = '💸'
 
 export default function Categories() {
   const { categories, reloadCategories, loadingCategories } = useData()
@@ -33,8 +17,8 @@ export default function Categories() {
   const [editing, setEditing] = useState<Category | null>(null)
 
   const [name, setName] = useState('')
-  const [color, setColor] = useState(COLORS[0])
-  const [icon, setIcon] = useState(ICONS[0])
+  const [color, setColor] = useState(DEFAULT_COLOR)
+  const [icon, setIcon] = useState(DEFAULT_ICON)
   const [kind, setKind] = useState<CategoryKind>('expense')
   const [budget, setBudget] = useState('')
   const [favorite, setFavorite] = useState(false)
@@ -46,8 +30,8 @@ export default function Categories() {
   function openNew(forKind: CategoryKind = 'expense') {
     setEditing(null)
     setName('')
-    setColor(COLORS[0])
-    setIcon(ICONS[0])
+    setColor(DEFAULT_COLOR)
+    setIcon(DEFAULT_ICON)
     setKind(forKind)
     setBudget('')
     setFavorite(false)
@@ -238,58 +222,12 @@ export default function Categories() {
             </div>
           )}
 
-          <div>
-            <label className="label">Ícono</label>
-            <div className="mb-2 flex items-center gap-3">
-              <span
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
-                style={{ backgroundColor: color + '33' }}
-              >
-                {icon}
-              </span>
-              <input
-                className="input flex-1 text-center text-xl"
-                value={icon}
-                onChange={(e) => setIcon(lastGrapheme(e.target.value))}
-                placeholder="Tocá y elegí un emoji"
-                aria-label="Emoji de la categoría"
-              />
-            </div>
-            <p className="mb-2 text-xs text-slate-500">
-              Abrí el teclado y usá cualquier emoji, o elegí uno de los sugeridos.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {ICONS.map((i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => setIcon(i)}
-                  className={`flex h-10 w-10 items-center justify-center rounded-lg text-xl ${
-                    icon === i ? 'ring-2 ring-brand' : 'bg-slate-800'
-                  }`}
-                >
-                  {i}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="label">Color</label>
-            <div className="flex flex-wrap gap-2">
-              {COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  className={`h-9 w-9 rounded-full ${
-                    color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-slate-900' : ''
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-          </div>
+          <IconColorPicker
+            icon={icon}
+            color={color}
+            onIcon={setIcon}
+            onColor={setColor}
+          />
 
           <label className="flex items-center gap-3">
             <input

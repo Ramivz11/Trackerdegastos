@@ -1,9 +1,13 @@
 import { supabase } from './supabase'
 import type {
+  Account,
+  AccountBalance,
   Category,
+  Goal,
   RecurringExpense,
   Transaction,
   TransactionWithCategory,
+  Transfer,
 } from '../types'
 
 // ---------- Categorías ----------
@@ -66,7 +70,8 @@ export async function createTransaction(
   t: Pick<
     Transaction,
     'category_id' | 'amount' | 'description' | 'transaction_date' | 'type'
-  >,
+  > &
+    Partial<Pick<Transaction, 'account_id' | 'currency' | 'ars_rate'>>,
   userId: string,
 ): Promise<void> {
   const { error } = await supabase
@@ -156,5 +161,117 @@ export async function updateRecurring(
 
 export async function deleteRecurring(id: string): Promise<void> {
   const { error } = await supabase.from('recurring_expenses').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ---------- Cuentas ----------
+export async function fetchAccounts(): Promise<Account[]> {
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('*')
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data as Account[]
+}
+
+export async function createAccount(
+  a: Pick<
+    Account,
+    'name' | 'icon' | 'color' | 'type' | 'currency' | 'initial_balance' | 'sort_order'
+  >,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase.from('accounts').insert({ ...a, user_id: userId })
+  if (error) throw error
+}
+
+export async function updateAccount(
+  id: string,
+  patch: Partial<Account>,
+): Promise<void> {
+  const { error } = await supabase.from('accounts').update(patch).eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteAccount(id: string): Promise<void> {
+  const { error } = await supabase.from('accounts').delete().eq('id', id)
+  if (error) throw error
+}
+
+/** Saldo actual de cada cuenta (calculado en la base). */
+export async function fetchAccountBalances(): Promise<AccountBalance[]> {
+  const { data, error } = await supabase.rpc('account_balances')
+  if (error) throw error
+  return (data ?? []) as AccountBalance[]
+}
+
+// ---------- Transferencias ----------
+export async function fetchTransfers(limit = 50): Promise<Transfer[]> {
+  const { data, error } = await supabase
+    .from('transfers')
+    .select('*')
+    .order('transfer_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data as Transfer[]
+}
+
+export async function createTransfer(
+  t: Pick<
+    Transfer,
+    | 'from_account_id'
+    | 'to_account_id'
+    | 'amount'
+    | 'to_amount'
+    | 'description'
+    | 'transfer_date'
+  >,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase.from('transfers').insert({ ...t, user_id: userId })
+  if (error) throw error
+}
+
+export async function deleteTransfer(id: string): Promise<void> {
+  const { error } = await supabase.from('transfers').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ---------- Metas de ahorro ----------
+export async function fetchGoals(): Promise<Goal[]> {
+  const { data, error } = await supabase
+    .from('goals')
+    .select('*')
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data as Goal[]
+}
+
+export async function createGoal(
+  g: Pick<
+    Goal,
+    | 'name'
+    | 'icon'
+    | 'color'
+    | 'target_amount'
+    | 'saved_amount'
+    | 'currency'
+    | 'target_date'
+  >,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase.from('goals').insert({ ...g, user_id: userId })
+  if (error) throw error
+}
+
+export async function updateGoal(id: string, patch: Partial<Goal>): Promise<void> {
+  const { error } = await supabase.from('goals').update(patch).eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteGoal(id: string): Promise<void> {
+  const { error } = await supabase.from('goals').delete().eq('id', id)
   if (error) throw error
 }

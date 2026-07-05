@@ -10,7 +10,7 @@ import {
   updateRecurring,
 } from '../lib/api'
 import { nextDate } from '../lib/recurring'
-import { formatDate, formatMoney, todayISO } from '../lib/format'
+import { formatDate, formatMoney, rateFor, todayISO } from '../lib/format'
 import type { Frequency, RecurringExpense } from '../types'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
 
@@ -22,7 +22,7 @@ const FREQ_LABEL: Record<Frequency, string> = {
 }
 
 export default function Recurring() {
-  const { categories, categoriesById } = useData()
+  const { categories, categoriesById, accounts, accountsById } = useData()
   const { user } = useAuth()
   const [items, setItems] = useState<RecurringExpense[]>([])
   const [loading, setLoading] = useState(true)
@@ -42,6 +42,7 @@ export default function Recurring() {
   const [name, setName] = useState('')
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [accountId, setAccountId] = useState('')
   const [frequency, setFrequency] = useState<Frequency>('monthly')
   const [dueDate, setDueDate] = useState(todayISO())
   const [autoPost, setAutoPost] = useState(false)
@@ -65,6 +66,7 @@ export default function Recurring() {
     setName('')
     setAmount('')
     setCategoryId(categories[0]?.id ?? '')
+    setAccountId(accounts[0]?.id ?? '')
     setFrequency('monthly')
     setDueDate(todayISO())
     setAutoPost(false)
@@ -76,6 +78,7 @@ export default function Recurring() {
     setName(r.name)
     setAmount(String(r.amount))
     setCategoryId(r.category_id ?? '')
+    setAccountId(r.account_id ?? '')
     setFrequency(r.frequency)
     setDueDate(r.next_due_date)
     setAutoPost(r.auto_post)
@@ -92,6 +95,7 @@ export default function Recurring() {
         name: name.trim(),
         amount: value,
         category_id: categoryId || null,
+        account_id: accountId || null,
         frequency,
         next_due_date: dueDate,
         auto_post: autoPost,
@@ -117,10 +121,16 @@ export default function Recurring() {
     if (!user || payingId) return
     setPayingId(r.id)
     try {
+      const currency = r.account_id
+        ? (accountsById[r.account_id]?.currency ?? 'ARS')
+        : 'ARS'
       await createTransaction(
         {
           category_id: r.category_id,
+          account_id: r.account_id,
           amount: r.amount,
+          currency,
+          ars_rate: rateFor(currency),
           description: r.name,
           transaction_date: todayISO(),
           type: 'expense',
@@ -294,6 +304,23 @@ export default function Recurring() {
               ))}
             </select>
           </div>
+          {accounts.length > 0 && (
+            <div>
+              <label className="label">Cuenta / medio de pago</label>
+              <select
+                className="input"
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+              >
+                <option value="">Sin cuenta</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.icon} {a.name} ({a.currency})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className="label">Frecuencia</label>
             <select

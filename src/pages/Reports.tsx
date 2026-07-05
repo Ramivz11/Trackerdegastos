@@ -12,7 +12,7 @@ import {
 } from 'recharts'
 import { useData } from '../context/DataContext'
 import { fetchTransactionsByMonth } from '../lib/api'
-import { currentMonth, formatMoney } from '../lib/format'
+import { currentMonth, formatMoney, toArs } from '../lib/format'
 import { format, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { TransactionWithCategory } from '../types'
@@ -59,7 +59,8 @@ export default function Reports() {
     const map = new Map<string, number>()
     for (const t of currentTxs) {
       if (t.type !== type || !t.category_id) continue
-      map.set(t.category_id, (map.get(t.category_id) ?? 0) + Number(t.amount))
+      const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
+      map.set(t.category_id, (map.get(t.category_id) ?? 0) + ars)
     }
     return [...map.entries()]
       .map(([id, value]) => ({
@@ -86,8 +87,9 @@ export default function Reports() {
       let gasto = 0
       let ingreso = 0
       for (const t of txs) {
-        if (t.type === 'expense') gasto += Number(t.amount)
-        else ingreso += Number(t.amount)
+        const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
+        if (t.type === 'expense') gasto += ars
+        else ingreso += ars
       }
       return {
         month: format(parseISO(m + '-01'), 'MMM', { locale: es }),
@@ -104,7 +106,8 @@ export default function Reports() {
       if (t.type !== 'expense' || !t.category_id) continue
       spentByCat.set(
         t.category_id,
-        (spentByCat.get(t.category_id) ?? 0) + Number(t.amount),
+        (spentByCat.get(t.category_id) ?? 0) +
+          toArs(Number(t.amount), t.currency, t.ars_rate),
       )
     }
     return categories

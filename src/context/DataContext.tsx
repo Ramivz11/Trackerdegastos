@@ -6,8 +6,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { fetchCategories } from '../lib/api'
-import type { Category } from '../types'
+import { fetchAccounts, fetchCategories } from '../lib/api'
+import type { Account, Category } from '../types'
 import { useAuth } from './AuthContext'
 
 interface DataContextValue {
@@ -15,6 +15,10 @@ interface DataContextValue {
   categoriesById: Record<string, Category>
   loadingCategories: boolean
   reloadCategories: () => Promise<void>
+  accounts: Account[]
+  accountsById: Record<string, Account>
+  loadingAccounts: boolean
+  reloadAccounts: () => Promise<void>
 }
 
 const DataContext = createContext<DataContextValue | undefined>(undefined)
@@ -22,26 +26,50 @@ const DataContext = createContext<DataContextValue | undefined>(undefined)
 export function DataProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
   const [categories, setCategories] = useState<Category[]>([])
-  const [loadingCategories, setLoading] = useState(true)
+  const [loadingCategories, setLoadingCategories] = useState(true)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [loadingAccounts, setLoadingAccounts] = useState(true)
 
   const reloadCategories = useCallback(async () => {
     if (!user) return
     try {
       setCategories(await fetchCategories())
     } finally {
-      setLoading(false)
+      setLoadingCategories(false)
+    }
+  }, [user])
+
+  const reloadAccounts = useCallback(async () => {
+    if (!user) return
+    try {
+      setAccounts(await fetchAccounts())
+    } finally {
+      setLoadingAccounts(false)
     }
   }, [user])
 
   useEffect(() => {
-    if (user) void reloadCategories()
-  }, [user, reloadCategories])
+    if (user) {
+      void reloadCategories()
+      void reloadAccounts()
+    }
+  }, [user, reloadCategories, reloadAccounts])
 
   const categoriesById = Object.fromEntries(categories.map((c) => [c.id, c]))
+  const accountsById = Object.fromEntries(accounts.map((a) => [a.id, a]))
 
   return (
     <DataContext.Provider
-      value={{ categories, categoriesById, loadingCategories, reloadCategories }}
+      value={{
+        categories,
+        categoriesById,
+        loadingCategories,
+        reloadCategories,
+        accounts,
+        accountsById,
+        loadingAccounts,
+        reloadAccounts,
+      }}
     >
       {children}
     </DataContext.Provider>
