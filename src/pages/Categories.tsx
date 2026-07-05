@@ -12,6 +12,20 @@ const COLORS = [
 ]
 const ICONS = ['💸', '🍔', '🛒', '🚌', '💡', '💊', '🎉', '🏠', '👕', '📚', '🎮', '✈️', '🐶', '☕', '⛽', '💰', '🥇', '🤖', '💵', '💳', '🏦', '📈']
 
+// Deja solo el último emoji/grafema escrito, para que el input acepte cualquier
+// emoji del teclado de iOS pero guarde uno solo.
+function lastGrapheme(value: string): string {
+  if (!value) return ''
+  const Segmenter = (Intl as any).Segmenter
+  if (Segmenter) {
+    const seg = new Segmenter(undefined, { granularity: 'grapheme' })
+    const parts = Array.from(seg.segment(value), (s: any) => s.segment as string)
+    return parts[parts.length - 1] ?? ''
+  }
+  const arr = Array.from(value)
+  return arr[arr.length - 1] ?? ''
+}
+
 export default function Categories() {
   const { categories, reloadCategories, loadingCategories } = useData()
   const { user } = useAuth()
@@ -226,6 +240,24 @@ export default function Categories() {
 
           <div>
             <label className="label">Ícono</label>
+            <div className="mb-2 flex items-center gap-3">
+              <span
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
+                style={{ backgroundColor: color + '33' }}
+              >
+                {icon}
+              </span>
+              <input
+                className="input flex-1 text-center text-xl"
+                value={icon}
+                onChange={(e) => setIcon(lastGrapheme(e.target.value))}
+                placeholder="Tocá y elegí un emoji"
+                aria-label="Emoji de la categoría"
+              />
+            </div>
+            <p className="mb-2 text-xs text-slate-500">
+              Abrí el teclado y usá cualquier emoji, o elegí uno de los sugeridos.
+            </p>
             <div className="flex flex-wrap gap-2">
               {ICONS.map((i) => (
                 <button
