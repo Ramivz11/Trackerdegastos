@@ -5,6 +5,7 @@ import type {
   Category,
   Goal,
   RecurringExpense,
+  StatementPayment,
   Transaction,
   TransactionWithCategory,
   Transfer,
@@ -66,18 +67,55 @@ export async function fetchTransactionsByMonth(
   return data as unknown as TransactionWithCategory[]
 }
 
+type NewTransaction = Pick<
+  Transaction,
+  'category_id' | 'amount' | 'description' | 'transaction_date' | 'type'
+> &
+  Partial<
+    Pick<
+      Transaction,
+      | 'account_id'
+      | 'currency'
+      | 'ars_rate'
+      | 'group_id'
+      | 'installment_n'
+      | 'installment_total'
+    >
+  >
+
 export async function createTransaction(
-  t: Pick<
-    Transaction,
-    'category_id' | 'amount' | 'description' | 'transaction_date' | 'type'
-  > &
-    Partial<Pick<Transaction, 'account_id' | 'currency' | 'ars_rate'>>,
+  t: NewTransaction,
   userId: string,
 ): Promise<void> {
   const { error } = await supabase
     .from('transactions')
     .insert({ ...t, user_id: userId })
   if (error) throw error
+}
+
+/** Inserta varias transacciones de una (ej: las cuotas de una compra). */
+export async function createTransactions(
+  rows: NewTransaction[],
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('transactions')
+    .insert(rows.map((r) => ({ ...r, user_id: userId })))
+  if (error) throw error
+}
+
+/** Todas las transacciones de una cuenta (incluye cuotas futuras), más nuevas primero. */
+export async function fetchTransactionsByAccount(
+  accountId: string,
+): Promise<TransactionWithCategory[]> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*, category:categories(*)')
+    .eq('account_id', accountId)
+    .order('transaction_date', { ascending: false })
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data as unknown as TransactionWithCategory[]
 }
 
 export async function updateTransaction(
@@ -179,7 +217,8 @@ export async function createAccount(
   a: Pick<
     Account,
     'name' | 'icon' | 'color' | 'type' | 'currency' | 'initial_balance' | 'sort_order'
-  >,
+  > &
+    Partial<Pick<Account, 'closing_day' | 'due_day'>>,
   userId: string,
 ): Promise<void> {
   const { error } = await supabase.from('accounts').insert({ ...a, user_id: userId })
@@ -273,5 +312,36 @@ export async function updateGoal(id: string, patch: Partial<Goal>): Promise<void
 
 export async function deleteGoal(id: string): Promise<void> {
   const { error } = await supabase.from('goals').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ---------- Pagos de resúmenes de tarjeta ----------
+export async function fetchStatementPayments(
+  accountId: string,
+): Promise<StatementPayment[]> {
+  const { data, error } = await supabase
+    .from('statement_payments')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('cycle_close', { ascending: false })
+  if (error) throw error
+  return data as StatementPayment[]
+}
+
+export async function createStatementPayment(
+  p: Pick<
+    StatementPayment,
+    'account_id' | 'cycle_close' | 'amount' | 'paid_from_account_id' | 'paid_date'
+  >,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('statement_payments')
+    .insert({ ...p, user_id: userId })
+  if (error) throw error
+}
+
+export async function deleteStatementPayment(id: string): Promise<void> {
+  const { error } = await supabase.from('statement_payments').delete().eq('id', id)
   if (error) throw error
 }

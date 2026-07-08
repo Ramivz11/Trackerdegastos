@@ -5,10 +5,12 @@ import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import {
   createTransaction,
+  createTransactions,
   deleteTransaction,
   fetchTransactionsByMonth,
   updateTransaction,
 } from '../lib/api'
+import { buildInstallmentRows } from '../lib/statements'
 import {
   currentMonth,
   formatDate,
@@ -45,6 +47,7 @@ export default function Transactions() {
   const [accountId, setAccountId] = useState('')
   const [date, setDate] = useState(todayISO())
   const [description, setDescription] = useState('')
+  const [installments, setInstallments] = useState(1)
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
@@ -115,6 +118,7 @@ export default function Transactions() {
     setAccountId(accounts[0]?.id ?? '')
     setDate(todayISO())
     setDescription('')
+    setInstallments(1)
     setOpen(true)
   }
 
@@ -126,6 +130,7 @@ export default function Transactions() {
     setAccountId(t.account_id ?? '')
     setDate(t.transaction_date)
     setDescription(t.description ?? '')
+    setInstallments(1)
     setOpen(true)
   }
 
@@ -135,19 +140,33 @@ export default function Transactions() {
     if (isNaN(value) || value <= 0) return
     setSaving(true)
     try {
-      const currency: Currency = accountsById[accountId]?.currency ?? 'ARS'
-      const payload = {
+      const acc = accountsById[accountId]
+      const currency: Currency = acc?.currency ?? 'ARS'
+      const base = {
         category_id: categoryId || null,
         account_id: accountId || null,
-        amount: value,
         currency,
         ars_rate: rateFor(currency),
         description: description.trim() || null,
-        transaction_date: date,
         type,
       }
-      if (editing) await updateTransaction(editing.id, payload)
-      else await createTransaction(payload, user.id)
+      const cuotas = !editing && type === 'expense' && acc?.type === 'card' ? installments : 1
+      if (cuotas > 1) {
+        const groupId = crypto.randomUUID()
+        const rows = buildInstallmentRows(value, cuotas, date).map((r) => ({
+          ...base,
+          amount: r.amount,
+          transaction_date: r.transaction_date,
+          group_id: groupId,
+          installment_n: r.installment_n,
+          installment_total: r.installment_total,
+        }))
+        await createTransactions(rows, user.id)
+      } else {
+        const payload = { ...base, amount: value, transaction_date: date }
+        if (editing) await updateTransaction(editing.id, payload)
+        else await createTransaction(payload, user.id)
+      }
       setOpen(false)
       await load()
     } finally {
@@ -395,6 +414,37 @@ export default function Transactions() {
               </select>
             </div>
           )}
+
+          {!editing &&
+            type === 'expense' &&
+            accountsById[accountId]?.type === 'card' && (
+              <div>
+                <label className="label">Cuotas</label>
+                <div className="grid grid-cols-6 gap-2">
+                  {[1, 3, 6, 9, 12, 18].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setInstallments(n)}
+                      className={`btn py-2 text-sm ${
+                        installments === n
+                          ? 'bg-brand text-white'
+                          : 'bg-slate-700/60 text-slate-300'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                {installments > 1 && amount && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    {installments} cuotas de aprox.{' '}
+                    {formatMoney(parseFloat(amount) / installments)}. La 1ª entra en
+                    el resumen de este ciclo.
+                  </p>
+                )}
+              </div>
+            )}
 
           <div>
             <label className="label">Fecha</label>

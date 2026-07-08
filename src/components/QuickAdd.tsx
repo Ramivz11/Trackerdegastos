@@ -3,8 +3,9 @@ import Modal from './Modal'
 import AmountKeypad from './AmountKeypad'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
-import { createTransaction, fetchTopCategoryIds } from '../lib/api'
+import { createTransaction, createTransactions, fetchTopCategoryIds } from '../lib/api'
 import { rateFor, todayISO } from '../lib/format'
+import { buildInstallmentRows } from '../lib/statements'
 import type { Category } from '../types'
 
 const LAST_ACCOUNT_KEY = 'tracker:lastAccount'
@@ -27,6 +28,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
   const [selected, setSelected] = useState<Category | null>(null)
   const [amount, setAmount] = useState('')
   const [accountId, setAccountId] = useState<string>('')
+  const [installments, setInstallments] = useState(1)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -64,6 +66,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     setSelected(null)
     setAmount('')
     setShowAll(false)
+    setInstallments(1)
   }
 
   function close() {
@@ -80,19 +83,33 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     setSaving(true)
     try {
       const currency = account?.currency ?? 'ARS'
-      await createTransaction(
-        {
-          category_id: selected.id,
-          account_id: account?.id ?? null,
-          amount: value,
-          currency,
-          ars_rate: rateFor(currency),
-          description: null,
-          transaction_date: todayISO(),
-          type: 'expense',
-        },
-        user.id,
-      )
+      const isCard = account?.type === 'card'
+      const cuotas = isCard ? installments : 1
+      const base = {
+        category_id: selected.id,
+        account_id: account?.id ?? null,
+        currency,
+        ars_rate: rateFor(currency),
+        description: null,
+        type: 'expense' as const,
+      }
+      if (cuotas > 1) {
+        const groupId = crypto.randomUUID()
+        const rows = buildInstallmentRows(value, cuotas, todayISO()).map((r) => ({
+          ...base,
+          amount: r.amount,
+          transaction_date: r.transaction_date,
+          group_id: groupId,
+          installment_n: r.installment_n,
+          installment_total: r.installment_total,
+        }))
+        await createTransactions(rows, user.id)
+      } else {
+        await createTransaction(
+          { ...base, amount: value, transaction_date: todayISO() },
+          user.id,
+        )
+      }
       if (account) localStorage.setItem(LAST_ACCOUNT_KEY, account.id)
       close()
       onSaved?.()
@@ -180,6 +197,36 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {account?.type === 'card' && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium text-slate-400">Cuotas</p>
+                <div className="grid grid-cols-6 gap-2">
+                  {[1, 3, 6, 9, 12, 18].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setInstallments(n)}
+                      className={`rounded-xl py-2 text-sm transition active:scale-95 ${
+                        installments === n
+                          ? 'bg-brand text-white'
+                          : 'bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                {installments > 1 && amount && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    {installments} cuotas de aprox.{' '}
+                    {(parseFloat(amount) / installments).toLocaleString('es-AR', {
+                      maximumFractionDigits: 2,
+                    })}
+                  </p>
+                )}
               </div>
             )}
 

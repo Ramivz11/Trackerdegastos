@@ -216,9 +216,53 @@ where not exists (
   select 1 from public.accounts a where a.user_id = u.id
 );
 
+-- ---------- Tarjetas de crédito: día de cierre y de vencimiento ----------
+-- closing_day: día del mes en que cierra el resumen (ej: 28).
+-- due_day: día del mes en que vence (para pagar). Ambos solo aplican a type='card'.
+alter table public.accounts
+  add column if not exists closing_day smallint check (closing_day between 1 and 31);
+alter table public.accounts
+  add column if not exists due_day smallint check (due_day between 1 and 31);
+
+-- ---------- Cuotas: una compra en N cuotas se guarda como N transacciones ----------
+-- group_id agrupa las cuotas de una misma compra; installment_n / _total indican
+-- "cuota N de M". Cada cuota queda fechada en el ciclo que le corresponde.
+alter table public.transactions
+  add column if not exists group_id uuid;
+alter table public.transactions
+  add column if not exists installment_n smallint;
+alter table public.transactions
+  add column if not exists installment_total smallint;
+create index if not exists idx_tx_group on public.transactions (group_id);
+
+-- ---------- Pagos de resúmenes de tarjeta ----------
+-- Cada fila = un resumen (identificado por cycle_close) marcado como pagado.
+-- El pago descuenta de paid_from_account_id (ej: tu banco).
+create table if not exists public.statement_payments (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  account_id uuid not null references public.accounts (id) on delete cascade, -- la tarjeta
+  cycle_close date not null,        -- fecha de cierre que identifica el resumen
+  amount numeric(14, 2) not null check (amount >= 0),
+  paid_from_account_id uuid references public.accounts (id) on delete set null,
+  paid_date date not null default current_date,
+  created_at timestamptz not null default now(),
+  unique (account_id, cycle_close)
+);
+create index if not exists idx_sp_user_acc
+  on public.statement_payments (user_id, account_id);
+
+alter table public.statement_payments enable row level security;
+drop policy if exists "own statement_payments" on public.statement_payments;
+create policy "own statement_payments" on public.statement_payments
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 -- ---------- Función: saldo actual de cada cuenta ----------
 -- Saldo = saldo inicial + (ingresos - gastos con esa cuenta) + (transferencias
--- recibidas) - (transferencias enviadas). Todo en la moneda propia de la cuenta.
+-- recibidas) - (transferencias enviadas) - (pagos de resúmenes que salen de ella).
+-- Todo en la moneda propia de la cuenta. Nota: para las tarjetas este saldo no se
+-- usa en pantalla (la deuda se calcula por ciclo en la app), pero el pago de un
+-- resumen sí descuenta de la cuenta desde la que se paga.
 create or replace function public.account_balances()
 returns table (account_id uuid, balance numeric)
 language sql
@@ -242,6 +286,11 @@ as $$
         select sum(tr.amount)
         from public.transfers tr
         where tr.from_account_id = a.id
+      ), 0)
+    - coalesce((
+        select sum(sp.amount)
+        from public.statement_payments sp
+        where sp.paid_from_account_id = a.id
       ), 0) as balance
   from public.accounts a
   where a.user_id = auth.uid();

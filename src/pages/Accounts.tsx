@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Modal from '../components/Modal'
 import IconColorPicker from '../components/IconColorPicker'
 import { useData } from '../context/DataContext'
@@ -9,10 +10,12 @@ import {
   deleteAccount,
   deleteTransfer,
   fetchAccountBalances,
+  fetchTransactionsByAccount,
   fetchTransfers,
   updateAccount,
 } from '../lib/api'
 import { formatDate, formatMoney, getUsdRate, todayISO } from '../lib/format'
+import { openCycleTotal } from '../lib/statements'
 import type { Account, AccountType, Currency, Transfer } from '../types'
 
 const ACCOUNT_ICONS = ['💵', '🏦', '💳', '🪙', '📱', '💰', '🐷', '🟠', '💜', '🔵', '🟢']
@@ -25,8 +28,11 @@ const TYPE_LABEL: Record<AccountType, string> = {
 export default function Accounts() {
   const { accounts, reloadAccounts, loadingAccounts } = useData()
   const { user } = useAuth()
+  const navigate = useNavigate()
 
   const [balances, setBalances] = useState<Record<string, number>>({})
+  // Deuda del ciclo abierto de cada tarjeta (lo que mostramos como su "saldo").
+  const [cardDebt, setCardDebt] = useState<Record<string, number>>({})
   const [transfers, setTransfers] = useState<Transfer[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -36,10 +42,21 @@ export default function Accounts() {
       const [bal, tr] = await Promise.all([fetchAccountBalances(), fetchTransfers()])
       setBalances(Object.fromEntries(bal.map((b) => [b.account_id, Number(b.balance)])))
       setTransfers(tr)
+
+      // Para las tarjetas, el "saldo" es la deuda del ciclo abierto.
+      const cards = accounts.filter((a) => a.type === 'card')
+      const today = todayISO()
+      const debts = await Promise.all(
+        cards.map(async (c) => {
+          const txs = await fetchTransactionsByAccount(c.id)
+          return [c.id, openCycleTotal(c, txs, today)] as const
+        }),
+      )
+      setCardDebt(Object.fromEntries(debts))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [accounts])
 
   useEffect(() => {
     void load()
@@ -50,10 +67,12 @@ export default function Accounts() {
     [accounts],
   )
 
-  // Total en ARS (convierte las cuentas en USD con la cotización actual).
+  // Total en ARS (convierte las cuentas en USD con la cotización actual). Las
+  // tarjetas no suman: representan deuda, no plata disponible.
   const totalArs = useMemo(() => {
     const rate = getUsdRate()
     return accounts.reduce((sum, a) => {
+      if (a.type === 'card') return sum
       const bal = balances[a.id] ?? a.initial_balance
       return sum + (a.currency === 'USD' ? bal * rate : bal)
     }, 0)
@@ -68,6 +87,8 @@ export default function Accounts() {
   const [type, setType] = useState<AccountType>('bank')
   const [currency, setCur] = useState<Currency>('ARS')
   const [initial, setInitial] = useState('')
+  const [closingDay, setClosingDay] = useState('')
+  const [dueDay, setDueDay] = useState('')
   const [savingAcc, setSavingAcc] = useState(false)
 
   function openNewAcc() {
@@ -78,6 +99,8 @@ export default function Accounts() {
     setType('bank')
     setCur('ARS')
     setInitial('')
+    setClosingDay('')
+    setDueDay('')
     setAccOpen(true)
   }
 
@@ -89,6 +112,8 @@ export default function Accounts() {
     setType(a.type)
     setCur(a.currency)
     setInitial(String(a.initial_balance))
+    setClosingDay(a.closing_day != null ? String(a.closing_day) : '')
+    setDueDay(a.due_day != null ? String(a.due_day) : '')
     setAccOpen(true)
   }
 
@@ -104,6 +129,8 @@ export default function Accounts() {
         currency,
         initial_balance: initial ? parseFloat(initial) : 0,
         sort_order: editing?.sort_order ?? accounts.length,
+        closing_day: type === 'card' && closingDay ? parseInt(closingDay, 10) : null,
+        due_day: type === 'card' && dueDay ? parseInt(dueDay, 10) : null,
       }
       if (editing) await updateAccount(editing.id, payload)
       else await createAccount(payload, user.id)
@@ -229,30 +256,54 @@ export default function Accounts() {
               </p>
             ) : (
               accounts.map((a) => {
-                const bal = balances[a.id] ?? a.initial_balance
+                const isCard = a.type === 'card'
+                const bal = isCard
+                  ? (cardDebt[a.id] ?? 0)
+                  : (balances[a.id] ?? a.initial_balance)
                 return (
                   <div key={a.id} className="card flex items-center gap-3">
-                    <span
-                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
-                      style={{ backgroundColor: a.color + '33' }}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        isCard ? navigate(`/tarjetas/${a.id}`) : openEditAcc(a)
+                      }
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
-                      {a.icon}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-semibold text-slate-100">
-                        {a.name}
+                      <span
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
+                        style={{ backgroundColor: a.color + '33' }}
+                      >
+                        {a.icon}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-semibold text-slate-100">
+                          {a.name}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {isCard && a.closing_day
+                            ? `Tarjeta · cierra el ${a.closing_day} · ver resúmenes ›`
+                            : `${TYPE_LABEL[a.type]} · ${a.currency}`}
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-400">
-                        {TYPE_LABEL[a.type]} · {a.currency}
+                      <div
+                        className={`shrink-0 text-right font-bold ${
+                          isCard
+                            ? bal > 0
+                              ? 'text-orange-400'
+                              : 'text-slate-400'
+                            : bal < 0
+                              ? 'text-red-400'
+                              : 'text-slate-100'
+                        }`}
+                      >
+                        {formatMoney(bal, a.currency)}
+                        {isCard && (
+                          <div className="text-[10px] font-normal text-slate-500">
+                            ciclo actual
+                          </div>
+                        )}
                       </div>
-                    </div>
-                    <div
-                      className={`shrink-0 text-right font-bold ${
-                        bal < 0 ? 'text-red-400' : 'text-slate-100'
-                      }`}
-                    >
-                      {formatMoney(bal, a.currency)}
-                    </div>
+                    </button>
                     <button
                       onClick={() => openEditAcc(a)}
                       className="rounded-lg px-1 py-1 text-slate-400 hover:text-slate-100"
@@ -362,6 +413,46 @@ export default function Accounts() {
             </div>
           </div>
 
+          {type === 'card' && (
+            <div className="rounded-xl bg-slate-800/60 p-3">
+              <p className="mb-2 text-xs font-medium text-slate-400">
+                Tarjeta de crédito
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">Día de cierre</label>
+                  <input
+                    className="input"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={31}
+                    value={closingDay}
+                    onChange={(e) => setClosingDay(e.target.value)}
+                    placeholder="28"
+                  />
+                </div>
+                <div>
+                  <label className="label">Día de vencimiento</label>
+                  <input
+                    className="input"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={31}
+                    value={dueDay}
+                    onChange={(e) => setDueDay(e.target.value)}
+                    placeholder="10"
+                  />
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                El resumen junta los gastos del ciclo (ej: del 29 al 28) y vence el
+                día que indiques del mes siguiente.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="label">Moneda</label>
             <div className="grid grid-cols-2 gap-2">
@@ -380,21 +471,23 @@ export default function Accounts() {
             </div>
           </div>
 
-          <div>
-            <label className="label">Saldo actual (inicial)</label>
-            <input
-              className="input"
-              type="number"
-              inputMode="decimal"
-              value={initial}
-              onChange={(e) => setInitial(e.target.value)}
-              placeholder="0"
-            />
-            <p className="mt-1 text-xs text-slate-500">
-              El saldo que tenés hoy en esta cuenta. Después se ajusta solo con tus
-              movimientos y transferencias.
-            </p>
-          </div>
+          {type !== 'card' && (
+            <div>
+              <label className="label">Saldo actual (inicial)</label>
+              <input
+                className="input"
+                type="number"
+                inputMode="decimal"
+                value={initial}
+                onChange={(e) => setInitial(e.target.value)}
+                placeholder="0"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                El saldo que tenés hoy en esta cuenta. Después se ajusta solo con tus
+                movimientos y transferencias.
+              </p>
+            </div>
+          )}
 
           <IconColorPicker
             icon={icon}

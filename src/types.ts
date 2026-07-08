@@ -32,6 +32,10 @@ export interface Account {
   type: AccountType
   currency: Currency
   initial_balance: number
+  /** Solo tarjetas: día del mes en que cierra el resumen (1-31). */
+  closing_day: number | null
+  /** Solo tarjetas: día del mes en que vence el resumen (1-31). */
+  due_day: number | null
   is_active: boolean
   sort_order: number
   created_at: string
@@ -48,6 +52,24 @@ export interface Transaction {
   description: string | null
   transaction_date: string // YYYY-MM-DD
   type: TransactionType
+  /** Cuotas: agrupa las cuotas de una misma compra (null si no es en cuotas). */
+  group_id: string | null
+  /** Cuotas: número de esta cuota (1-based). */
+  installment_n: number | null
+  /** Cuotas: cantidad total de cuotas de la compra. */
+  installment_total: number | null
+  created_at: string
+}
+
+/** Pago de un resumen de tarjeta (un ciclo marcado como pagado). */
+export interface StatementPayment {
+  id: string
+  user_id: string
+  account_id: string // la tarjeta
+  cycle_close: string // YYYY-MM-DD, fecha de cierre que identifica el resumen
+  amount: number
+  paid_from_account_id: string | null
+  paid_date: string // YYYY-MM-DD
   created_at: string
 }
 

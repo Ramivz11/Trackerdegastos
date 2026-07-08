@@ -7,6 +7,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Transactions from './pages/Transactions'
 import Accounts from './pages/Accounts'
+import CardStatements from './pages/CardStatements'
 import Goals from './pages/Goals'
 import Recurring from './pages/Recurring'
 import Reports from './pages/Reports'
@@ -43,6 +44,7 @@ function Protected() {
           <Route index element={<Dashboard />} />
           <Route path="transacciones" element={<Transactions />} />
           <Route path="cuentas" element={<Accounts />} />
+          <Route path="tarjetas/:id" element={<CardStatements />} />
           <Route path="metas" element={<Goals />} />
           <Route path="recurrentes" element={<Recurring />} />
           <Route path="reportes" element={<Reports />} />
