@@ -6,6 +6,7 @@ import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import {
   createAccount,
+  createTransaction,
   createTransfer,
   deleteAccount,
   deleteTransfer,
@@ -14,7 +15,7 @@ import {
   fetchTransfers,
   updateAccount,
 } from '../lib/api'
-import { formatDate, formatMoney, getUsdRate, todayISO } from '../lib/format'
+import { formatDate, formatMoney, getUsdRate, rateFor, todayISO } from '../lib/format'
 import { openCycleTotal } from '../lib/statements'
 import type { Account, AccountType, Currency, Transfer } from '../types'
 
@@ -224,6 +225,50 @@ export default function Accounts() {
     await load()
   }
 
+  // ----- Modal de conciliación de saldo -----
+  const [recAcc, setRecAcc] = useState<Account | null>(null)
+  const [realBalance, setRealBalance] = useState('')
+  const [recDate, setRecDate] = useState(todayISO())
+  const [savingRec, setSavingRec] = useState(false)
+
+  const recCurrent = recAcc ? (balances[recAcc.id] ?? recAcc.initial_balance) : 0
+  const recReal = parseFloat(realBalance)
+  const recDiff = isNaN(recReal) ? 0 : Math.round((recReal - recCurrent) * 100) / 100
+
+  function openReconcile(a: Account) {
+    setRecAcc(a)
+    setRealBalance('')
+    setRecDate(todayISO())
+  }
+
+  async function saveReconcile() {
+    if (!user || !recAcc || isNaN(recReal)) return
+    if (recDiff === 0) {
+      setRecAcc(null)
+      return
+    }
+    setSavingRec(true)
+    try {
+      await createTransaction(
+        {
+          category_id: null,
+          account_id: recAcc.id,
+          amount: Math.abs(recDiff),
+          currency: recAcc.currency,
+          ars_rate: rateFor(recAcc.currency),
+          description: 'Ajuste de saldo (conciliación)',
+          transaction_date: recDate,
+          type: recDiff > 0 ? 'income' : 'expense',
+        },
+        user.id,
+      )
+      setRecAcc(null)
+      await load()
+    } finally {
+      setSavingRec(false)
+    }
+  }
+
   return (
     <div>
       <header className="mb-4 flex items-center justify-between">
@@ -304,6 +349,15 @@ export default function Accounts() {
                         )}
                       </div>
                     </button>
+                    {!isCard && (
+                      <button
+                        onClick={() => openReconcile(a)}
+                        title="Conciliar saldo"
+                        className="rounded-lg px-1 py-1 text-slate-400 hover:text-slate-100"
+                      >
+                        ⚖️
+                      </button>
+                    )}
                     <button
                       onClick={() => openEditAcc(a)}
                       className="rounded-lg px-1 py-1 text-slate-400 hover:text-slate-100"
@@ -622,6 +676,84 @@ export default function Accounts() {
             {savingTr ? 'Guardando…' : 'Transferir'}
           </button>
         </div>
+      </Modal>
+
+      {/* ----- Modal conciliación de saldo ----- */}
+      <Modal
+        open={recAcc !== null}
+        onClose={() => setRecAcc(null)}
+        title="Conciliar saldo"
+      >
+        {recAcc && (
+          <div className="space-y-4">
+            <div className="rounded-xl bg-slate-800/60 p-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">{recAcc.icon}</span>
+                <span className="font-semibold text-slate-100">{recAcc.name}</span>
+              </div>
+              <div className="mt-2 text-sm text-slate-400">
+                Saldo según la app:{' '}
+                <span className="font-semibold text-slate-200">
+                  {formatMoney(recCurrent, recAcc.currency)}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label className="label">Saldo real ({recAcc.currency})</label>
+              <input
+                className="input text-2xl font-bold"
+                type="number"
+                inputMode="decimal"
+                value={realBalance}
+                onChange={(e) => setRealBalance(e.target.value)}
+                placeholder="0"
+                autoFocus
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                El saldo que ves hoy en tu banco o billetera. Se crea un movimiento
+                de ajuste por la diferencia.
+              </p>
+            </div>
+
+            {!isNaN(recReal) && (
+              <div
+                className={`rounded-xl p-3 text-sm ${
+                  recDiff === 0
+                    ? 'bg-slate-800/60 text-slate-400'
+                    : recDiff > 0
+                      ? 'bg-green-500/10 text-green-400'
+                      : 'bg-red-500/10 text-red-400'
+                }`}
+              >
+                {recDiff === 0
+                  ? 'Los saldos ya coinciden, no hace falta ajustar.'
+                  : `Ajuste: ${recDiff > 0 ? '+' : '−'}${formatMoney(
+                      Math.abs(recDiff),
+                      recAcc.currency,
+                    )} (${recDiff > 0 ? 'ingreso' : 'gasto'} de ajuste)`}
+              </div>
+            )}
+
+            <div>
+              <label className="label">Fecha del ajuste</label>
+              <input
+                className="input"
+                type="date"
+                value={recDate}
+                onChange={(e) => setRecDate(e.target.value)}
+              />
+            </div>
+
+            <button
+              onClick={saveReconcile}
+              disabled={savingRec || isNaN(recReal) || recDiff === 0}
+              className="btn-primary w-full disabled:opacity-50"
+            >
+              {savingRec ? 'Guardando…' : 'Ajustar saldo'}
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   )
