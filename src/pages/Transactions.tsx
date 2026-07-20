@@ -103,6 +103,7 @@ export default function Transactions() {
     let expense = 0
     let income = 0
     for (const t of filtered) {
+      if (t.is_transfer) continue
       const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
       if (t.type === 'expense') expense += ars
       else income += ars

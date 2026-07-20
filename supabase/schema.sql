@@ -60,6 +60,13 @@ alter table public.transactions
 alter table public.transactions
   add column if not exists ars_rate numeric(14, 4) not null default 1;
 
+-- is_transfer: marca el lado "crédito" de una compra de moneda (ver
+-- "Comprar moneda" en Cuentas). Ajusta el saldo de la cuenta destino pero se
+-- excluye de los totales de ingreso/gasto en Reportes/Dashboard, para no
+-- duplicar el monto que ya se contó como gasto en la cuenta origen.
+alter table public.transactions
+  add column if not exists is_transfer boolean not null default false;
+
 -- ---------- Tabla: gastos recurrentes / recordatorios ----------
 create table if not exists public.recurring_expenses (
   id uuid primary key default gen_random_uuid(),
@@ -176,6 +183,7 @@ begin
     (new.id, 'Salud',            '#ef4444', '💊', 'expense', false),
     (new.id, 'Ocio',             '#a855f7', '🎉', 'expense', true),
     (new.id, 'Hogar',            '#14b8a6', '🏠', 'expense', false),
+    (new.id, 'Compra de moneda', '#0ea5e9', '💱', 'expense', false),
     (new.id, 'Otros',            '#64748b', '💸', 'expense', false),
     -- Categorías de ingreso
     (new.id, 'Sueldo',           '#22c55e', '💰', 'income', true),
@@ -206,6 +214,15 @@ cross join (values
 where not exists (
   select 1 from public.categories c
   where c.user_id = u.id and c.kind = 'income' and c.name = v.name
+);
+
+-- ---------- Categoría "Compra de moneda" para usuarios YA existentes ----------
+insert into public.categories (user_id, name, color, icon, kind, is_favorite)
+select u.id, 'Compra de moneda', '#0ea5e9', '💱', 'expense', false
+from auth.users u
+where not exists (
+  select 1 from public.categories c
+  where c.user_id = u.id and c.kind = 'expense' and c.name = 'Compra de moneda'
 );
 
 -- ---------- Cuenta "Efectivo" para usuarios YA existentes (idempotente) ----------

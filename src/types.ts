@@ -58,6 +58,12 @@ export interface Transaction {
   installment_n: number | null
   /** Cuotas: cantidad total de cuotas de la compra. */
   installment_total: number | null
+  /**
+   * true solo en el movimiento "crédito" generado por una compra de moneda
+   * (ver `buyCurrency`): ajusta el saldo de la cuenta destino pero se
+   * excluye de los totales de ingreso/gasto en reportes.
+   */
+  is_transfer: boolean
   created_at: string
 }
 

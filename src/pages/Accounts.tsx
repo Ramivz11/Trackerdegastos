@@ -5,6 +5,7 @@ import IconColorPicker from '../components/IconColorPicker'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import {
+  buyCurrency,
   createAccount,
   createTransaction,
   createTransfer,
@@ -27,7 +28,7 @@ const TYPE_LABEL: Record<AccountType, string> = {
 }
 
 export default function Accounts() {
-  const { accounts, reloadAccounts, loadingAccounts } = useData()
+  const { accounts, categories, reloadAccounts, loadingAccounts } = useData()
   const { user } = useAuth()
   const navigate = useNavigate()
 
@@ -112,7 +113,7 @@ export default function Accounts() {
     setColor(a.color)
     setType(a.type)
     setCur(a.currency)
-    setInitial(String(a.initial_balance))
+    setInitial(String(balances[a.id] ?? a.initial_balance))
     setClosingDay(a.closing_day != null ? String(a.closing_day) : '')
     setDueDay(a.due_day != null ? String(a.due_day) : '')
     setAccOpen(true)
@@ -128,13 +129,42 @@ export default function Accounts() {
         color,
         type,
         currency,
-        initial_balance: initial ? parseFloat(initial) : 0,
         sort_order: editing?.sort_order ?? accounts.length,
         closing_day: type === 'card' && closingDay ? parseInt(closingDay, 10) : null,
         due_day: type === 'card' && dueDay ? parseInt(dueDay, 10) : null,
       }
-      if (editing) await updateAccount(editing.id, payload)
-      else await createAccount(payload, user.id)
+      if (editing) {
+        await updateAccount(editing.id, payload)
+        // El campo "Saldo actual" edita el saldo de hoy, no el inicial: si
+        // cambió, se crea un movimiento de ajuste por la diferencia.
+        if (type !== 'card') {
+          const newBalance = parseFloat(initial)
+          const current = balances[editing.id] ?? editing.initial_balance
+          const diff = !isNaN(newBalance)
+            ? Math.round((newBalance - current) * 100) / 100
+            : 0
+          if (diff !== 0) {
+            await createTransaction(
+              {
+                category_id: null,
+                account_id: editing.id,
+                amount: Math.abs(diff),
+                currency: editing.currency,
+                ars_rate: rateFor(editing.currency),
+                description: 'Ajuste de saldo',
+                transaction_date: todayISO(),
+                type: diff > 0 ? 'income' : 'expense',
+              },
+              user.id,
+            )
+          }
+        }
+      } else {
+        await createAccount(
+          { ...payload, initial_balance: initial ? parseFloat(initial) : 0 },
+          user.id,
+        )
+      }
       setAccOpen(false)
       await reloadAccounts()
       await load()
@@ -225,47 +255,87 @@ export default function Accounts() {
     await load()
   }
 
-  // ----- Modal de conciliación de saldo -----
-  const [recAcc, setRecAcc] = useState<Account | null>(null)
-  const [realBalance, setRealBalance] = useState('')
-  const [recDate, setRecDate] = useState(todayISO())
-  const [savingRec, setSavingRec] = useState(false)
+  // ----- Modal de comprar moneda -----
+  // Solo tiene sentido si hay al menos dos cuentas en monedas distintas.
+  const crossCurrencyPairExists = accounts.some((a) =>
+    accounts.some((b) => b.id !== a.id && b.currency !== a.currency),
+  )
+  const expenseCategories = useMemo(
+    () => categories.filter((c) => c.kind !== 'income'),
+    [categories],
+  )
 
-  const recCurrent = recAcc ? (balances[recAcc.id] ?? recAcc.initial_balance) : 0
-  const recReal = parseFloat(realBalance)
-  const recDiff = isNaN(recReal) ? 0 : Math.round((recReal - recCurrent) * 100) / 100
+  const [buyOpen, setBuyOpen] = useState(false)
+  const [buyFromId, setBuyFromId] = useState('')
+  const [buyToId, setBuyToId] = useState('')
+  const [buyAmount, setBuyAmount] = useState('')
+  const [buyReceived, setBuyReceived] = useState('')
+  const [buyCategoryId, setBuyCategoryId] = useState('')
+  const [buyDate, setBuyDate] = useState(todayISO())
+  const [buyNote, setBuyNote] = useState('')
+  const [savingBuy, setSavingBuy] = useState(false)
 
-  function openReconcile(a: Account) {
-    setRecAcc(a)
-    setRealBalance('')
-    setRecDate(todayISO())
+  const buyFromAcc = accountsById[buyFromId]
+  const buyToOptions = accounts.filter(
+    (a) => a.id !== buyFromId && a.currency !== buyFromAcc?.currency,
+  )
+  const buyToAcc = accountsById[buyToId]
+
+  function openBuyCurrency() {
+    const from = accounts[0]?.id ?? ''
+    const fromAcc = accountsById[from]
+    const to = accounts.find((a) => a.id !== from && a.currency !== fromAcc?.currency)
+    setBuyFromId(from)
+    setBuyToId(to?.id ?? '')
+    setBuyAmount('')
+    setBuyReceived('')
+    const defaultCat =
+      expenseCategories.find((c) => c.name === 'Compra de moneda') ?? expenseCategories[0]
+    setBuyCategoryId(defaultCat?.id ?? '')
+    setBuyDate(todayISO())
+    setBuyNote('')
+    setBuyOpen(true)
   }
 
-  async function saveReconcile() {
-    if (!user || !recAcc || isNaN(recReal)) return
-    if (recDiff === 0) {
-      setRecAcc(null)
-      return
+  // Sugerencia de cuánto se acredita en destino según la cotización.
+  function onBuyAmountChange(v: string) {
+    setBuyAmount(v)
+    if (buyFromAcc && buyToAcc) {
+      const n = parseFloat(v)
+      if (!isNaN(n)) {
+        const rate = getUsdRate()
+        const converted =
+          buyFromAcc.currency === 'USD' ? n * rate : n / rate // USD→ARS o ARS→USD
+        setBuyReceived(converted ? String(Math.round(converted * 100) / 100) : '')
+      }
     }
-    setSavingRec(true)
+  }
+
+  async function saveBuyCurrency() {
+    if (!user || !buyFromAcc || !buyToAcc) return
+    const spent = parseFloat(buyAmount)
+    const received = parseFloat(buyReceived)
+    if (isNaN(spent) || spent <= 0 || isNaN(received) || received <= 0) return
+    setSavingBuy(true)
     try {
-      await createTransaction(
+      await buyCurrency(
         {
-          category_id: null,
-          account_id: recAcc.id,
-          amount: Math.abs(recDiff),
-          currency: recAcc.currency,
-          ars_rate: rateFor(recAcc.currency),
-          description: 'Ajuste de saldo (conciliación)',
-          transaction_date: recDate,
-          type: recDiff > 0 ? 'income' : 'expense',
+          fromAccountId: buyFromAcc.id,
+          toAccountId: buyToAcc.id,
+          fromCurrency: buyFromAcc.currency,
+          toCurrency: buyToAcc.currency,
+          spentAmount: spent,
+          receivedAmount: received,
+          categoryId: buyCategoryId || null,
+          date: buyDate,
+          description: buyNote.trim() || null,
         },
         user.id,
       )
-      setRecAcc(null)
+      setBuyOpen(false)
       await load()
     } finally {
-      setSavingRec(false)
+      setSavingBuy(false)
     }
   }
 
@@ -349,15 +419,6 @@ export default function Accounts() {
                         )}
                       </div>
                     </button>
-                    {!isCard && (
-                      <button
-                        onClick={() => openReconcile(a)}
-                        title="Conciliar saldo"
-                        className="rounded-lg px-1 py-1 text-slate-400 hover:text-slate-100"
-                      >
-                        ⚖️
-                      </button>
-                    )}
                     <button
                       onClick={() => openEditAcc(a)}
                       className="rounded-lg px-1 py-1 text-slate-400 hover:text-slate-100"
@@ -382,6 +443,15 @@ export default function Accounts() {
               className="btn-ghost mt-4 w-full"
             >
               ⇄ Transferir entre cuentas
+            </button>
+          )}
+
+          {crossCurrencyPairExists && (
+            <button
+              onClick={openBuyCurrency}
+              className="btn-ghost mt-2 w-full"
+            >
+              💱 Comprar moneda
             </button>
           )}
 
@@ -527,9 +597,9 @@ export default function Accounts() {
 
           {type !== 'card' && (
             <div>
-              <label className="label">Saldo actual (inicial)</label>
+              <label className="label">Saldo actual</label>
               <input
-                className="input"
+                className="input text-2xl font-bold"
                 type="number"
                 inputMode="decimal"
                 value={initial}
@@ -537,8 +607,9 @@ export default function Accounts() {
                 placeholder="0"
               />
               <p className="mt-1 text-xs text-slate-500">
-                El saldo que tenés hoy en esta cuenta. Después se ajusta solo con tus
-                movimientos y transferencias.
+                {editing
+                  ? 'Si lo cambiás, se crea un movimiento de ajuste por la diferencia con el saldo actual.'
+                  : 'El saldo que tenés hoy en esta cuenta. Después se ajusta solo con tus movimientos y transferencias.'}
               </p>
             </div>
           )}
@@ -678,82 +749,124 @@ export default function Accounts() {
         </div>
       </Modal>
 
-      {/* ----- Modal conciliación de saldo ----- */}
-      <Modal
-        open={recAcc !== null}
-        onClose={() => setRecAcc(null)}
-        title="Conciliar saldo"
-      >
-        {recAcc && (
-          <div className="space-y-4">
-            <div className="rounded-xl bg-slate-800/60 p-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">{recAcc.icon}</span>
-                <span className="font-semibold text-slate-100">{recAcc.name}</span>
-              </div>
-              <div className="mt-2 text-sm text-slate-400">
-                Saldo según la app:{' '}
-                <span className="font-semibold text-slate-200">
-                  {formatMoney(recCurrent, recAcc.currency)}
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <label className="label">Saldo real ({recAcc.currency})</label>
-              <input
-                className="input text-2xl font-bold"
-                type="number"
-                inputMode="decimal"
-                value={realBalance}
-                onChange={(e) => setRealBalance(e.target.value)}
-                placeholder="0"
-                autoFocus
-              />
-              <p className="mt-1 text-xs text-slate-500">
-                El saldo que ves hoy en tu banco o billetera. Se crea un movimiento
-                de ajuste por la diferencia.
-              </p>
-            </div>
-
-            {!isNaN(recReal) && (
-              <div
-                className={`rounded-xl p-3 text-sm ${
-                  recDiff === 0
-                    ? 'bg-slate-800/60 text-slate-400'
-                    : recDiff > 0
-                      ? 'bg-green-500/10 text-green-400'
-                      : 'bg-red-500/10 text-red-400'
-                }`}
-              >
-                {recDiff === 0
-                  ? 'Los saldos ya coinciden, no hace falta ajustar.'
-                  : `Ajuste: ${recDiff > 0 ? '+' : '−'}${formatMoney(
-                      Math.abs(recDiff),
-                      recAcc.currency,
-                    )} (${recDiff > 0 ? 'ingreso' : 'gasto'} de ajuste)`}
-              </div>
-            )}
-
-            <div>
-              <label className="label">Fecha del ajuste</label>
-              <input
-                className="input"
-                type="date"
-                value={recDate}
-                onChange={(e) => setRecDate(e.target.value)}
-              />
-            </div>
-
-            <button
-              onClick={saveReconcile}
-              disabled={savingRec || isNaN(recReal) || recDiff === 0}
-              className="btn-primary w-full disabled:opacity-50"
+      {/* ----- Modal comprar moneda ----- */}
+      <Modal open={buyOpen} onClose={() => setBuyOpen(false)} title="Comprar moneda">
+        <div className="space-y-4">
+          <div>
+            <label className="label">Pagás desde</label>
+            <select
+              className="input"
+              value={buyFromId}
+              onChange={(e) => {
+                setBuyFromId(e.target.value)
+                setBuyToId('')
+              }}
             >
-              {savingRec ? 'Guardando…' : 'Ajustar saldo'}
-            </button>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.icon} {a.name} ({a.currency})
+                </option>
+              ))}
+            </select>
           </div>
-        )}
+
+          <div>
+            <label className="label">Se acredita en</label>
+            <select
+              className="input"
+              value={buyToId}
+              onChange={(e) => setBuyToId(e.target.value)}
+            >
+              <option value="">Elegí una cuenta</option>
+              {buyToOptions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.icon} {a.name} ({a.currency})
+                </option>
+              ))}
+            </select>
+            {buyToOptions.length === 0 && (
+              <p className="mt-1 text-xs text-slate-500">
+                No hay ninguna cuenta en otra moneda. Creá una primero con “+ Nueva”.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="label">
+              Monto que gastás {buyFromAcc ? `(${buyFromAcc.currency})` : ''}
+            </label>
+            <input
+              className="input text-2xl font-bold"
+              type="number"
+              inputMode="decimal"
+              value={buyAmount}
+              onChange={(e) => onBuyAmountChange(e.target.value)}
+              placeholder="0"
+            />
+          </div>
+
+          <div>
+            <label className="label">
+              Cuánto recibís {buyToAcc ? `(${buyToAcc.currency})` : ''}
+            </label>
+            <input
+              className="input"
+              type="number"
+              inputMode="decimal"
+              value={buyReceived}
+              onChange={(e) => setBuyReceived(e.target.value)}
+              placeholder="0"
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Sugerido con el dólar a {formatMoney(getUsdRate(), 'ARS')} · ajustable en
+              Ajustes.
+            </p>
+          </div>
+
+          <div>
+            <label className="label">Categoría del gasto</label>
+            <select
+              className="input"
+              value={buyCategoryId}
+              onChange={(e) => setBuyCategoryId(e.target.value)}
+            >
+              <option value="">Sin categoría</option>
+              {expenseCategories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.icon} {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="label">Fecha</label>
+            <input
+              className="input"
+              type="date"
+              value={buyDate}
+              onChange={(e) => setBuyDate(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="label">Nota (opcional)</label>
+            <input
+              className="input"
+              value={buyNote}
+              onChange={(e) => setBuyNote(e.target.value)}
+              placeholder="Ej: Compra de dólares"
+            />
+          </div>
+
+          <button
+            onClick={saveBuyCurrency}
+            disabled={savingBuy || !buyAmount || !buyReceived || !buyToId}
+            className="btn-primary w-full disabled:opacity-50"
+          >
+            {savingBuy ? 'Guardando…' : 'Comprar'}
+          </button>
+        </div>
       </Modal>
     </div>
   )

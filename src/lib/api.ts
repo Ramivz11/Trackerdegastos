@@ -1,8 +1,10 @@
 import { supabase } from './supabase'
+import { rateFor } from './format'
 import type {
   Account,
   AccountBalance,
   Category,
+  Currency,
   Goal,
   RecurringExpense,
   StatementPayment,
@@ -80,6 +82,7 @@ type NewTransaction = Pick<
       | 'group_id'
       | 'installment_n'
       | 'installment_total'
+      | 'is_transfer'
     >
   >
 
@@ -129,6 +132,51 @@ export async function updateTransaction(
 export async function deleteTransaction(id: string): Promise<void> {
   const { error } = await supabase.from('transactions').delete().eq('id', id)
   if (error) throw error
+}
+
+/**
+ * Compra de moneda: crea el gasto real en la cuenta origen (cuenta y suma
+ * en reportes) y el crédito en la cuenta destino (ajusta su saldo pero no
+ * cuenta como ingreso, ver `is_transfer`).
+ */
+export async function buyCurrency(
+  params: {
+    fromAccountId: string
+    toAccountId: string
+    fromCurrency: Currency
+    toCurrency: Currency
+    spentAmount: number
+    receivedAmount: number
+    categoryId: string | null
+    date: string
+    description: string | null
+  },
+  userId: string,
+): Promise<void> {
+  const rows: NewTransaction[] = [
+    {
+      category_id: params.categoryId,
+      account_id: params.fromAccountId,
+      amount: params.spentAmount,
+      currency: params.fromCurrency,
+      ars_rate: rateFor(params.fromCurrency),
+      description: params.description,
+      transaction_date: params.date,
+      type: 'expense',
+    },
+    {
+      category_id: null,
+      account_id: params.toAccountId,
+      amount: params.receivedAmount,
+      currency: params.toCurrency,
+      ars_rate: rateFor(params.toCurrency),
+      description: params.description,
+      transaction_date: params.date,
+      type: 'income',
+      is_transfer: true,
+    },
+  ]
+  await createTransactions(rows, userId)
 }
 
 /**

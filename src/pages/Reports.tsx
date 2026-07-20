@@ -58,7 +58,7 @@ export default function Reports() {
   function byCategory(type: 'expense' | 'income') {
     const map = new Map<string, number>()
     for (const t of currentTxs) {
-      if (t.type !== type || !t.category_id) continue
+      if (t.is_transfer || t.type !== type || !t.category_id) continue
       const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
       map.set(t.category_id, (map.get(t.category_id) ?? 0) + ars)
     }
@@ -87,6 +87,7 @@ export default function Reports() {
       let gasto = 0
       let ingreso = 0
       for (const t of txs) {
+        if (t.is_transfer) continue
         const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
         if (t.type === 'expense') gasto += ars
         else ingreso += ars
@@ -103,7 +104,7 @@ export default function Reports() {
   const budgetData = useMemo(() => {
     const spentByCat = new Map<string, number>()
     for (const t of currentTxs) {
-      if (t.type !== 'expense' || !t.category_id) continue
+      if (t.is_transfer || t.type !== 'expense' || !t.category_id) continue
       spentByCat.set(
         t.category_id,
         (spentByCat.get(t.category_id) ?? 0) +

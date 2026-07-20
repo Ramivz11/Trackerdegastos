@@ -50,6 +50,7 @@ export default function Dashboard() {
     let income = 0
     const byCategory = new Map<string, number>()
     for (const t of txs) {
+      if (t.is_transfer) continue
       const amt = toArs(Number(t.amount), t.currency, t.ars_rate)
       if (t.type === 'expense') {
         spent += amt
