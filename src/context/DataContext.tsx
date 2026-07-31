@@ -6,8 +6,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { fetchAccounts, fetchCategories } from '../lib/api'
-import type { Account, Category } from '../types'
+import { fetchAccounts, fetchCategories, fetchCategoryRules } from '../lib/api'
+import type { Account, Category, CategoryRule } from '../types'
 import { useAuth } from './AuthContext'
 
 interface DataContextValue {
@@ -19,6 +19,8 @@ interface DataContextValue {
   accountsById: Record<string, Account>
   loadingAccounts: boolean
   reloadAccounts: () => Promise<void>
+  rules: CategoryRule[]
+  reloadRules: () => Promise<void>
 }
 
 const DataContext = createContext<DataContextValue | undefined>(undefined)
@@ -29,6 +31,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [loadingCategories, setLoadingCategories] = useState(true)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loadingAccounts, setLoadingAccounts] = useState(true)
+  const [rules, setRules] = useState<CategoryRule[]>([])
 
   const reloadCategories = useCallback(async () => {
     if (!user) return
@@ -48,12 +51,23 @@ export function DataProvider({ children }: { children: ReactNode }) {
     }
   }, [user])
 
+  const reloadRules = useCallback(async () => {
+    if (!user) return
+    // Las reglas son opcionales: si la tabla todavía no existe, seguimos igual.
+    try {
+      setRules(await fetchCategoryRules())
+    } catch {
+      setRules([])
+    }
+  }, [user])
+
   useEffect(() => {
     if (user) {
       void reloadCategories()
       void reloadAccounts()
+      void reloadRules()
     }
-  }, [user, reloadCategories, reloadAccounts])
+  }, [user, reloadCategories, reloadAccounts, reloadRules])
 
   const categoriesById = Object.fromEntries(categories.map((c) => [c.id, c]))
   const accountsById = Object.fromEntries(accounts.map((a) => [a.id, a]))
@@ -69,6 +83,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
         accountsById,
         loadingAccounts,
         reloadAccounts,
+        rules,
+        reloadRules,
       }}
     >
       {children}

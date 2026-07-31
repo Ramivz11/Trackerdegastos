@@ -8,6 +8,10 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
+      workbox: {
+        // Suma los handlers de push al service worker generado por Workbox.
+        importScripts: ['push-sw.js'],
+      },
       manifest: {
         name: 'Tracker de Gastos',
         short_name: 'Gastos',

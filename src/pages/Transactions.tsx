@@ -10,26 +10,26 @@ import {
   fetchTransactionsByMonth,
   updateTransaction,
 } from '../lib/api'
+import { isShared, netAmount, netArs } from '../lib/amounts'
 import { buildInstallmentRows } from '../lib/statements'
+import { findDuplicate } from '../lib/duplicates'
+import { downloadCsv, transactionsToCsv } from '../lib/export'
+import { suggestCategory } from '../lib/rules'
+import { processReceipt, receiptScanEnabled } from '../lib/receipts'
 import {
   currentMonth,
   formatDate,
   formatMoney,
   formatMonth,
   rateFor,
+  shiftMonth,
   toArs,
   todayISO,
 } from '../lib/format'
 import type { Currency, TransactionType, TransactionWithCategory } from '../types'
 
-function shiftMonth(month: string, delta: number): string {
-  const [y, m] = month.split('-').map(Number)
-  const d = new Date(y, m - 1 + delta, 1)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
 export default function Transactions() {
-  const { categories, categoriesById, accounts, accountsById } = useData()
+  const { categories, categoriesById, accounts, accountsById, rules } = useData()
   const { user } = useAuth()
   const [month, setMonth] = useState(currentMonth())
   const [items, setItems] = useState<TransactionWithCategory[]>([])
@@ -49,6 +49,12 @@ export default function Transactions() {
   const [description, setDescription] = useState('')
   const [installments, setInstallments] = useState(1)
   const [saving, setSaving] = useState(false)
+  const [owedAmount, setOwedAmount] = useState('')
+  const [owedNote, setOwedNote] = useState('')
+  const [receiptPath, setReceiptPath] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanMsg, setScanMsg] = useState<string | null>(null)
+  const [dupWarning, setDupWarning] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -104,12 +110,21 @@ export default function Transactions() {
     let income = 0
     for (const t of filtered) {
       if (t.is_transfer) continue
-      const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
-      if (t.type === 'expense') expense += ars
-      else income += ars
+      // De un gasto compartido se cuenta solo tu parte.
+      if (t.type === 'expense') expense += netArs(t)
+      else income += toArs(Number(t.amount), t.currency, t.ars_rate)
     }
     return { expense, income }
   }, [filtered])
+
+  function resetExtras() {
+    setReceiptPath(null)
+    setScanMsg(null)
+    setDupWarning(null)
+    setScanning(false)
+    setOwedAmount('')
+    setOwedNote('')
+  }
 
   function openNew() {
     setEditing(null)
@@ -120,6 +135,7 @@ export default function Transactions() {
     setDate(todayISO())
     setDescription('')
     setInstallments(1)
+    resetExtras()
     setOpen(true)
   }
 
@@ -132,17 +148,105 @@ export default function Transactions() {
     setDate(t.transaction_date)
     setDescription(t.description ?? '')
     setInstallments(1)
+    resetExtras()
+    setReceiptPath(t.receipt_path)
+    const owed = Number(t.reimbursable_amount ?? 0)
+    setOwedAmount(owed > 0 ? String(owed) : '')
+    setOwedNote(t.reimbursable_note ?? '')
     setOpen(true)
+  }
+
+  /**
+   * Al escribir la nota, si alguna regla coincide y todavía no elegiste
+   * categoría a mano, se sugiere sola.
+   */
+  function changeDescription(text: string) {
+    setDescription(text)
+    setDupWarning(null)
+    if (type !== 'expense' || categoryId) return
+    const suggested = suggestCategory(text, rules)
+    if (suggested) setCategoryId(suggested)
+  }
+
+  /** Foto del ticket: la sube y, si está habilitado, la lee con Claude. */
+  async function onReceipt(file: File | undefined) {
+    if (!file || !user) return
+    setScanning(true)
+    setScanMsg(null)
+    try {
+      const { path, scan, scanError } = await processReceipt(file, user.id)
+      setReceiptPath(path)
+
+      if (scanError) {
+        setScanMsg(`Foto guardada, pero no se pudo leer: ${scanError}`)
+        return
+      }
+      if (!scan) {
+        setScanMsg('Foto guardada.')
+        return
+      }
+      if (!scan.encontrado) {
+        setScanMsg('Foto guardada, pero no se leyó como ticket. Cargalo a mano.')
+        return
+      }
+
+      if (scan.monto_total > 0) setAmount(String(scan.monto_total))
+      if (scan.comercio) changeDescription(scan.comercio)
+      if (scan.fecha) setDate(scan.fecha)
+      if (scan.cuotas > 1) setInstallments(scan.cuotas)
+
+      // La categoría del ticket solo se aplica si existe una con ese nombre.
+      const match = categories.find(
+        (c) =>
+          c.kind !== 'income' &&
+          c.name.toLowerCase() === scan.categoria_sugerida.toLowerCase(),
+      )
+      if (match) setCategoryId(match.id)
+
+      setScanMsg('Datos cargados desde el ticket. Revisalos antes de guardar.')
+    } catch (e) {
+      setScanMsg(`No se pudo procesar la foto: ${(e as Error).message}`)
+    } finally {
+      setScanning(false)
+    }
   }
 
   async function save() {
     if (!user) return
     const value = parseFloat(amount)
     if (isNaN(value) || value <= 0) return
+
+    // Aviso de posible duplicado (mismo monto, categoría, cuenta y día).
+    if (!editing && !dupWarning) {
+      const dup = findDuplicate(
+        {
+          amount: value,
+          category_id: categoryId || null,
+          account_id: accountId || null,
+          transaction_date: date,
+          type,
+        },
+        items,
+      )
+      if (dup) {
+        setDupWarning(
+          `Ya hay un movimiento igual el ${formatDate(dup.transaction_date)}` +
+            `${dup.description ? ` (“${dup.description}”)` : ''}. ` +
+            'Tocá Guardar de nuevo si querés cargarlo igual.',
+        )
+        return
+      }
+    }
+
     setSaving(true)
     try {
       const acc = accountsById[accountId]
       const currency: Currency = acc?.currency ?? 'ARS'
+      // Lo que te tienen que devolver nunca puede superar lo que pagaste.
+      const owed =
+        type === 'expense'
+          ? Math.min(Math.max(parseFloat(owedAmount) || 0, 0), value)
+          : 0
       const base = {
         category_id: categoryId || null,
         account_id: accountId || null,
@@ -150,6 +254,17 @@ export default function Transactions() {
         ars_rate: rateFor(currency),
         description: description.trim() || null,
         type,
+        // Solo se manda si hay foto, así la carga normal sigue andando en bases
+        // que todavía no corrieron el schema nuevo.
+        ...(receiptPath ? { receipt_path: receiptPath } : {}),
+        // Ídem con el gasto compartido: se manda si hay algo que informar, o si
+        // se está editando un movimiento que ya lo tenía (para poder ponerlo en 0).
+        ...(owed > 0 || Number(editing?.reimbursable_amount ?? 0) > 0
+          ? {
+              reimbursable_amount: owed,
+              reimbursable_note: owedNote.trim() || null,
+            }
+          : {}),
       }
       const cuotas = !editing && type === 'expense' && acc?.type === 'card' ? installments : 1
       if (cuotas > 1) {
@@ -181,13 +296,29 @@ export default function Transactions() {
     await load()
   }
 
+  /** Exporta lo que se está viendo (respeta los filtros activos). */
+  function exportar() {
+    const csv = transactionsToCsv(filtered, categoriesById, accountsById)
+    downloadCsv(`movimientos-${month}.csv`, csv)
+  }
+
   return (
     <div>
       <header className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Movimientos</h1>
-        <button onClick={openNew} className="btn-primary px-3 py-2 text-sm">
-          + Agregar
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={exportar}
+            disabled={filtered.length === 0}
+            className="btn-ghost px-3 py-2 text-sm disabled:opacity-40"
+            aria-label="Exportar a CSV"
+          >
+            ⬇ CSV
+          </button>
+          <button onClick={openNew} className="btn-primary px-3 py-2 text-sm">
+            + Agregar
+          </button>
+        </div>
       </header>
 
       {/* Selector de mes */}
@@ -325,14 +456,27 @@ export default function Transactions() {
                     {cat && t.description ? ` · ${cat.name}` : ''}
                     {acc ? ` · ${acc.icon} ${acc.name}` : ''}
                   </div>
+                  {isShared(t) && (
+                    <div className="truncate text-xs text-emerald-400">
+                      🤝 te deben {formatMoney(Number(t.reimbursable_amount), t.currency)}
+                      {t.reimbursable_note ? ` · ${t.reimbursable_note}` : ''}
+                    </div>
+                  )}
                 </div>
-                <div
-                  className={`shrink-0 font-bold ${
-                    t.type === 'expense' ? 'text-red-400' : 'text-emerald-400'
-                  }`}
-                >
-                  {t.type === 'expense' ? '-' : '+'}
-                  {formatMoney(Number(t.amount), t.currency)}
+                <div className="shrink-0 text-right">
+                  <div
+                    className={`font-bold ${
+                      t.type === 'expense' ? 'text-red-400' : 'text-emerald-400'
+                    }`}
+                  >
+                    {t.type === 'expense' ? '-' : '+'}
+                    {formatMoney(Number(t.amount), t.currency)}
+                  </div>
+                  {isShared(t) && (
+                    <div className="text-xs text-slate-500">
+                      tuyo {formatMoney(netAmount(t), t.currency)}
+                    </div>
+                  )}
                 </div>
               </button>
             )
@@ -368,6 +512,41 @@ export default function Transactions() {
             </button>
           </div>
 
+          {/* Foto del ticket: precarga monto, comercio y fecha */}
+          {!editing && type === 'expense' && (
+            <div>
+              <label
+                className={`btn w-full ${
+                  scanning
+                    ? 'bg-slate-700/60 text-slate-400'
+                    : 'bg-slate-700/60 text-slate-100'
+                }`}
+              >
+                {scanning
+                  ? 'Leyendo el ticket…'
+                  : receiptPath
+                    ? '📎 Cambiar foto del ticket'
+                    : receiptScanEnabled()
+                      ? '📷 Sacar foto del ticket'
+                      : '📷 Adjuntar foto del ticket'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  disabled={scanning}
+                  onChange={(e) => {
+                    void onReceipt(e.target.files?.[0])
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+              {scanMsg && (
+                <p className="mt-1 text-xs text-slate-400">{scanMsg}</p>
+              )}
+            </div>
+          )}
+
           <div>
             <label className="label">Monto</label>
             <input
@@ -375,7 +554,10 @@ export default function Transactions() {
               type="number"
               inputMode="decimal"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => {
+                setAmount(e.target.value)
+                setDupWarning(null)
+              }}
               placeholder="0"
             />
           </div>
@@ -457,15 +639,59 @@ export default function Transactions() {
             />
           </div>
 
+          {/* Gasto compartido: pagaste vos y te devuelven después */}
+          {type === 'expense' && installments === 1 && (
+            <div className="rounded-xl bg-slate-900/60 p-3">
+              <label className="label">Me deben (opcional)</label>
+              <input
+                className="input"
+                type="number"
+                inputMode="decimal"
+                value={owedAmount}
+                onChange={(e) => setOwedAmount(e.target.value)}
+                placeholder="0"
+              />
+              {owedAmount && parseFloat(owedAmount) > 0 && amount && (
+                <p className="mt-1 text-xs text-slate-400">
+                  De {formatMoney(parseFloat(amount) || 0, accountsById[accountId]?.currency ?? 'ARS')}{' '}
+                  pagados, tu parte es{' '}
+                  <span className="font-semibold text-slate-200">
+                    {formatMoney(
+                      Math.max(
+                        (parseFloat(amount) || 0) -
+                          Math.min(parseFloat(owedAmount) || 0, parseFloat(amount) || 0),
+                        0,
+                      ),
+                      accountsById[accountId]?.currency ?? 'ARS',
+                    )}
+                  </span>
+                  . Los reportes cuentan tu parte; de la cuenta sale el total.
+                </p>
+              )}
+              <input
+                className="input mt-2"
+                value={owedNote}
+                onChange={(e) => setOwedNote(e.target.value)}
+                placeholder="¿Quiénes? Ej: Juan y Sofi"
+              />
+            </div>
+          )}
+
           <div>
             <label className="label">Nota (opcional)</label>
             <input
               className="input"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => changeDescription(e.target.value)}
               placeholder="Ej: Cena con amigos"
             />
           </div>
+
+          {dupWarning && (
+            <p className="rounded-xl bg-amber-500/15 p-3 text-sm text-amber-400">
+              ⚠️ {dupWarning}
+            </p>
+          )}
 
           <div className="flex gap-2">
             {editing && (

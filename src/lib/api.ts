@@ -1,16 +1,24 @@
 import { supabase } from './supabase'
-import { rateFor } from './format'
+import { monthRange, rateFor } from './format'
 import type {
   Account,
   AccountBalance,
   Category,
+  CategoryRule,
   Currency,
   Goal,
+  Household,
+  HouseholdInvite,
+  HouseholdMember,
+  NetWorthPoint,
+  Receivable,
+  Reimbursement,
   RecurringExpense,
   StatementPayment,
   Transaction,
   TransactionWithCategory,
   Transfer,
+  UserSettings,
 } from '../types'
 
 // ---------- Categorías ----------
@@ -50,14 +58,11 @@ export async function deleteCategory(id: string): Promise<void> {
 }
 
 // ---------- Transacciones ----------
-export async function fetchTransactionsByMonth(
-  month: string, // YYYY-MM
+/** Movimientos entre dos fechas (inclusive), más nuevos primero. */
+export async function fetchTransactionsRange(
+  start: string, // YYYY-MM-DD
+  end: string, // YYYY-MM-DD
 ): Promise<TransactionWithCategory[]> {
-  const start = `${month}-01`
-  const [y, m] = month.split('-').map(Number)
-  const endDate = new Date(y, m, 0) // último día del mes
-  const end = endDate.toISOString().slice(0, 10)
-
   const { data, error } = await supabase
     .from('transactions')
     .select('*, category:categories(*)')
@@ -67,6 +72,13 @@ export async function fetchTransactionsByMonth(
     .order('created_at', { ascending: false })
   if (error) throw error
   return data as unknown as TransactionWithCategory[]
+}
+
+export async function fetchTransactionsByMonth(
+  month: string, // YYYY-MM
+): Promise<TransactionWithCategory[]> {
+  const { start, end } = monthRange(month)
+  return fetchTransactionsRange(start, end)
 }
 
 type NewTransaction = Pick<
@@ -83,6 +95,10 @@ type NewTransaction = Pick<
       | 'installment_n'
       | 'installment_total'
       | 'is_transfer'
+      | 'receipt_path'
+      | 'recurring_id'
+      | 'reimbursable_amount'
+      | 'reimbursable_note'
     >
   >
 
@@ -392,4 +408,337 @@ export async function createStatementPayment(
 export async function deleteStatementPayment(id: string): Promise<void> {
   const { error } = await supabase.from('statement_payments').delete().eq('id', id)
   if (error) throw error
+}
+
+// ---------- Ajustes del usuario ----------
+/** Trae los ajustes; si el usuario todavía no tiene fila, la crea. */
+export async function fetchSettings(userId: string): Promise<UserSettings> {
+  const { data, error } = await supabase
+    .from('user_settings')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  if (data) return data as UserSettings
+
+  const { data: created, error: insErr } = await supabase
+    .from('user_settings')
+    .insert({ user_id: userId })
+    .select('*')
+    .single()
+  if (insErr) throw insErr
+  return created as UserSettings
+}
+
+export async function saveSettings(
+  userId: string,
+  patch: Partial<Omit<UserSettings, 'user_id'>>,
+): Promise<UserSettings> {
+  const { data, error } = await supabase
+    .from('user_settings')
+    .upsert(
+      { user_id: userId, ...patch, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' },
+    )
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as UserSettings
+}
+
+// ---------- Reglas de auto-categorización ----------
+export async function fetchCategoryRules(): Promise<CategoryRule[]> {
+  const { data, error } = await supabase
+    .from('category_rules')
+    .select('*')
+    .order('priority', { ascending: false })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data as CategoryRule[]
+}
+
+export async function createCategoryRule(
+  r: Pick<CategoryRule, 'pattern' | 'category_id' | 'account_id' | 'priority'>,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('category_rules')
+    .insert({ ...r, user_id: userId })
+  if (error) throw error
+}
+
+export async function updateCategoryRule(
+  id: string,
+  patch: Partial<CategoryRule>,
+): Promise<void> {
+  const { error } = await supabase.from('category_rules').update(patch).eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteCategoryRule(id: string): Promise<void> {
+  const { error } = await supabase.from('category_rules').delete().eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * Aplica las reglas a los movimientos ya cargados que no tienen categoría (o
+ * que tienen la que la regla indica que debería cambiar). Devuelve cuántos
+ * movimientos se recategorizaron.
+ */
+export async function applyRulesToExisting(
+  rules: CategoryRule[],
+  onlyUncategorized = true,
+): Promise<number> {
+  const active = rules.filter((r) => r.is_active && r.category_id)
+  if (active.length === 0) return 0
+
+  let query = supabase.from('transactions').select('id, description, category_id')
+  if (onlyUncategorized) query = query.is('category_id', null)
+  const { data, error } = await query
+  if (error) throw error
+
+  const rows = (data ?? []) as {
+    id: string
+    description: string | null
+    category_id: string | null
+  }[]
+
+  let changed = 0
+  for (const row of rows) {
+    const text = (row.description ?? '').toLowerCase()
+    if (!text) continue
+    const hit = active.find((r) => text.includes(r.pattern.toLowerCase()))
+    if (!hit || hit.category_id === row.category_id) continue
+    const { error: upErr } = await supabase
+      .from('transactions')
+      .update({ category_id: hit.category_id })
+      .eq('id', row.id)
+    if (!upErr) changed++
+  }
+  return changed
+}
+
+// ---------- Modo hogar ----------
+export async function fetchMyHousehold(): Promise<Household | null> {
+  const { data, error } = await supabase.from('households').select('*').limit(1)
+  if (error) throw error
+  return (data?.[0] as Household) ?? null
+}
+
+export async function fetchHouseholdMembers(
+  householdId: string,
+): Promise<HouseholdMember[]> {
+  const { data, error } = await supabase
+    .from('household_members')
+    .select('*')
+    .eq('household_id', householdId)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data as HouseholdMember[]
+}
+
+export async function fetchHouseholdInvites(
+  householdId: string,
+): Promise<HouseholdInvite[]> {
+  const { data, error } = await supabase
+    .from('household_invites')
+    .select('*')
+    .eq('household_id', householdId)
+  if (error) throw error
+  return data as HouseholdInvite[]
+}
+
+export async function createHousehold(
+  name: string,
+  userId: string,
+): Promise<Household> {
+  const { data, error } = await supabase
+    .from('households')
+    .insert({ name, owner_id: userId })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as Household
+}
+
+export async function inviteToHousehold(
+  householdId: string,
+  email: string,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase.from('household_invites').insert({
+    household_id: householdId,
+    email: email.trim().toLowerCase(),
+    invited_by: userId,
+  })
+  if (error) throw error
+}
+
+export async function cancelInvite(id: string): Promise<void> {
+  const { error } = await supabase.from('household_invites').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function removeHouseholdMember(
+  householdId: string,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('household_members')
+    .delete()
+    .eq('household_id', householdId)
+    .eq('user_id', userId)
+  if (error) throw error
+}
+
+export async function deleteHousehold(id: string): Promise<void> {
+  const { error } = await supabase.from('households').delete().eq('id', id)
+  if (error) throw error
+}
+
+/** Convierte en membresías las invitaciones dirigidas a mi email. */
+export async function acceptPendingInvites(): Promise<number> {
+  const { data, error } = await supabase.rpc('accept_pending_invites')
+  if (error) return 0
+  return (data as number) ?? 0
+}
+
+// ---------- Patrimonio ----------
+export async function fetchNetWorthSeries(months = 12): Promise<NetWorthPoint[]> {
+  const { data, error } = await supabase.rpc('net_worth_series', { months })
+  if (error) throw error
+  return (data ?? []) as NetWorthPoint[]
+}
+
+// ---------- Recurrentes en el servidor ----------
+/** Pone al día tus recurrentes automáticos. Idempotente (ver schema.sql). */
+export async function postDueRecurring(): Promise<number> {
+  const { data, error } = await supabase.rpc('post_due_recurring_me')
+  if (error) throw error
+  return (data as number) ?? 0
+}
+
+// ---------- Notificaciones push ----------
+export async function savePushSubscription(
+  sub: { endpoint: string; p256dh: string; auth: string },
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert({ ...sub, user_id: userId }, { onConflict: 'endpoint' })
+  if (error) throw error
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .delete()
+    .eq('endpoint', endpoint)
+  if (error) throw error
+}
+
+// ---------- Gastos compartidos (lo que te deben) ----------
+/**
+ * Gastos con una parte a recuperar, junto con los cobros ya hechos.
+ *
+ * `onlyPending` deja solo los que todavía tienen saldo sin cobrar, que es lo
+ * que se muestra en el panel "Te deben".
+ */
+export async function fetchReceivables(
+  onlyPending = true,
+): Promise<Receivable[]> {
+  const { data: txData, error: txError } = await supabase
+    .from('transactions')
+    .select('*, category:categories(*)')
+    .gt('reimbursable_amount', 0)
+    .order('transaction_date', { ascending: false })
+  if (txError) throw txError
+
+  const txs = (txData ?? []) as unknown as TransactionWithCategory[]
+  if (txs.length === 0) return []
+
+  const { data: rbData, error: rbError } = await supabase
+    .from('reimbursements')
+    .select('*')
+    .in(
+      'transaction_id',
+      txs.map((t) => t.id),
+    )
+    .order('received_date', { ascending: true })
+  if (rbError) throw rbError
+
+  const byTx = new Map<string, Reimbursement[]>()
+  for (const r of (rbData ?? []) as Reimbursement[]) {
+    const list = byTx.get(r.transaction_id) ?? []
+    list.push(r)
+    byTx.set(r.transaction_id, list)
+  }
+
+  return txs
+    .map((t) => {
+      const payments = byTx.get(t.id) ?? []
+      const expected = Number(t.reimbursable_amount)
+      const collected = payments.reduce((s, p) => s + Number(p.amount), 0)
+      return {
+        transaction: t,
+        expected,
+        collected,
+        // Con tolerancia de un centavo, para que un cobro exacto no deje resto.
+        pending: Math.max(expected - collected, 0),
+        payments,
+      }
+    })
+    .filter((r) => (onlyPending ? r.pending > 0.009 : true))
+}
+
+export async function createReimbursement(
+  r: Pick<
+    Reimbursement,
+    'transaction_id' | 'amount' | 'account_id' | 'received_date' | 'note'
+  >,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('reimbursements')
+    .insert({ ...r, user_id: userId })
+  if (error) throw error
+}
+
+export async function deleteReimbursement(id: string): Promise<void> {
+  const { error } = await supabase.from('reimbursements').delete().eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * Da por perdido lo que falta cobrar: baja `reimbursable_amount` a lo que ya
+ * se cobró, así el gasto pasa a contar entero como tuyo.
+ */
+export async function writeOffReceivable(r: Receivable): Promise<void> {
+  await updateTransaction(r.transaction.id, {
+    reimbursable_amount: r.collected,
+  })
+}
+
+// ---------- Backup completo ----------
+const BACKUP_TABLES = [
+  'categories',
+  'accounts',
+  'transactions',
+  'recurring_expenses',
+  'transfers',
+  'goals',
+  'statement_payments',
+  'category_rules',
+  'reimbursements',
+] as const
+
+/** Descarga todas tus tablas para el backup en JSON. */
+export async function fetchFullBackup(): Promise<Record<string, unknown[]>> {
+  const out: Record<string, unknown[]> = {}
+  for (const table of BACKUP_TABLES) {
+    const { data, error } = await supabase.from(table).select('*')
+    if (error) throw error
+    out[table] = data ?? []
+  }
+  return out
 }

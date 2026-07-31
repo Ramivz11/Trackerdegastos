@@ -10,56 +10,72 @@ import {
   Tooltip,
   XAxis,
 } from 'recharts'
+import { Link } from 'react-router-dom'
 import { useData } from '../context/DataContext'
-import { fetchTransactionsByMonth } from '../lib/api'
-import { currentMonth, formatMoney, toArs } from '../lib/format'
+import { netArs } from '../lib/amounts'
+import { fetchTransactionsRange } from '../lib/api'
+import {
+  currentMonth,
+  formatMoney,
+  monthOf,
+  monthRange,
+  shiftMonth,
+  toArs,
+} from '../lib/format'
 import { format, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { TransactionWithCategory } from '../types'
 
 function lastMonths(n: number): string[] {
   const out: string[] = []
-  const [y, m] = currentMonth().split('-').map(Number)
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(y, m - 1 - i, 1)
-    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
-  }
+  const current = currentMonth()
+  for (let i = n - 1; i >= 0; i--) out.push(shiftMonth(current, -i))
   return out
 }
 
 export default function Reports() {
   const { categories, categoriesById } = useData()
-  const [monthsData, setMonthsData] = useState<
-    Record<string, TransactionWithCategory[]>
-  >({})
+  const [txs, setTxs] = useState<TransactionWithCategory[]>([])
   const [loading, setLoading] = useState(true)
   const months = useMemo(() => lastMonths(6), [])
 
+  // Una sola consulta por rango en lugar de una por mes.
   useEffect(() => {
     let cancel = false
     setLoading(true)
-    Promise.all(months.map((m) => fetchTransactionsByMonth(m)))
-      .then((results) => {
-        if (cancel) return
-        const map: Record<string, TransactionWithCategory[]> = {}
-        months.forEach((m, i) => (map[m] = results[i]))
-        setMonthsData(map)
-      })
+    const start = monthRange(months[0]).start
+    const end = monthRange(months[months.length - 1]).end
+    fetchTransactionsRange(start, end)
+      .then((d) => !cancel && setTxs(d))
       .finally(() => !cancel && setLoading(false))
     return () => {
       cancel = true
     }
   }, [months])
 
+  // Los movimientos agrupados por mes, para no recorrer la lista entera
+  // en cada uno de los gráficos.
+  const monthsData = useMemo(() => {
+    const map: Record<string, TransactionWithCategory[]> = {}
+    for (const m of months) map[m] = []
+    for (const t of txs) {
+      const m = monthOf(t.transaction_date)
+      if (map[m]) map[m].push(t)
+    }
+    return map
+  }, [txs, months])
+
   const current = currentMonth()
   const currentTxs = monthsData[current] ?? []
 
   // Agrupa por categoría las transacciones del tipo pedido (mes actual).
+  // De los gastos compartidos cuenta solo tu parte.
   function byCategory(type: 'expense' | 'income') {
     const map = new Map<string, number>()
     for (const t of currentTxs) {
       if (t.is_transfer || t.type !== type || !t.category_id) continue
-      const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
+      const ars =
+        type === 'expense' ? netArs(t) : toArs(Number(t.amount), t.currency, t.ars_rate)
       map.set(t.category_id, (map.get(t.category_id) ?? 0) + ars)
     }
     return [...map.entries()]
@@ -88,9 +104,8 @@ export default function Reports() {
       let ingreso = 0
       for (const t of txs) {
         if (t.is_transfer) continue
-        const ars = toArs(Number(t.amount), t.currency, t.ars_rate)
-        if (t.type === 'expense') gasto += ars
-        else ingreso += ars
+        if (t.type === 'expense') gasto += netArs(t)
+        else ingreso += toArs(Number(t.amount), t.currency, t.ars_rate)
       }
       return {
         month: format(parseISO(m + '-01'), 'MMM', { locale: es }),
@@ -105,11 +120,7 @@ export default function Reports() {
     const spentByCat = new Map<string, number>()
     for (const t of currentTxs) {
       if (t.is_transfer || t.type !== 'expense' || !t.category_id) continue
-      spentByCat.set(
-        t.category_id,
-        (spentByCat.get(t.category_id) ?? 0) +
-          toArs(Number(t.amount), t.currency, t.ars_rate),
-      )
+      spentByCat.set(t.category_id, (spentByCat.get(t.category_id) ?? 0) + netArs(t))
     }
     return categories
       .filter((c) => c.monthly_budget != null && c.monthly_budget > 0)
@@ -126,6 +137,30 @@ export default function Reports() {
   return (
     <div>
       <h1 className="mb-4 text-2xl font-bold text-white">Reportes</h1>
+
+      <div className="mb-4 grid grid-cols-3 gap-2">
+        <Link
+          to="/patrimonio"
+          className="card flex flex-col items-center gap-1 py-3 text-center"
+        >
+          <span className="text-xl">📈</span>
+          <span className="text-xs text-slate-300">Patrimonio</span>
+        </Link>
+        <Link
+          to="/presupuesto"
+          className="card flex flex-col items-center gap-1 py-3 text-center"
+        >
+          <span className="text-xl">🎯</span>
+          <span className="text-xs text-slate-300">Presupuesto</span>
+        </Link>
+        <Link
+          to="/buscar"
+          className="card flex flex-col items-center gap-1 py-3 text-center"
+        >
+          <span className="text-xl">🔍</span>
+          <span className="text-xs text-slate-300">Buscar</span>
+        </Link>
+      </div>
 
       {loading ? (
         <p className="text-slate-400">Cargando…</p>

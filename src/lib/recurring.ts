@@ -25,12 +25,23 @@ export function nextDate(iso: string, frequency: Frequency): string {
 }
 
 /**
- * Catch-up de gastos recurrentes con auto_post: por cada regla activa cuya
- * fecha de vencimiento ya pasó, inserta la transacción correspondiente y avanza
- * la fecha. Repite hasta ponerse al día (p. ej. si pasaron varios meses).
- * Devuelve cuántas transacciones se generaron.
+ * Pone al día los gastos recurrentes automáticos.
+ *
+ * Lo resuelve la base con `post_due_recurring_me()`, que además marca cada
+ * movimiento con su `recurring_id`: gracias al índice único, el cron nocturno
+ * y esta llamada nunca generan la misma cuota dos veces.
+ *
+ * Si la función todavía no existe en la base (schema viejo), cae al catch-up
+ * hecho desde el cliente. Devuelve cuántas transacciones se generaron.
  */
 export async function runRecurringCatchUp(userId: string): Promise<number> {
+  const { data, error } = await supabase.rpc('post_due_recurring_me')
+  if (!error) return (data as number) ?? 0
+  return clientSideCatchUp(userId)
+}
+
+/** Respaldo para bases que todavía no corrieron el schema nuevo. */
+async function clientSideCatchUp(userId: string): Promise<number> {
   const today = todayISO()
   const todayDate = parseISO(today)
 
