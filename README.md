@@ -183,3 +183,4 @@ React + TypeScript + Vite · Tailwind CSS · React Router · Recharts ·
 Supabase (Postgres + Auth + Storage + Edge Functions + pg_cron) ·
 Web Push (VAPID) · API de Claude (lectura de tickets) ·
 vite-plugin-pwa · Netlify
+
