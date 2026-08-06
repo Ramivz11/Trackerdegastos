@@ -284,9 +284,14 @@ export async function createAccount(
   > &
     Partial<Pick<Account, 'closing_day' | 'due_day'>>,
   userId: string,
-): Promise<void> {
-  const { error } = await supabase.from('accounts').insert({ ...a, user_id: userId })
+): Promise<Account> {
+  const { data, error } = await supabase
+    .from('accounts')
+    .insert({ ...a, user_id: userId })
+    .select()
+    .single()
   if (error) throw error
+  return data as Account
 }
 
 export async function updateAccount(

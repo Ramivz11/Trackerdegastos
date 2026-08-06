@@ -257,10 +257,8 @@ export default function Accounts() {
   }
 
   // ----- Modal de comprar moneda -----
-  // Solo tiene sentido si hay al menos dos cuentas en monedas distintas.
-  const crossCurrencyPairExists = accounts.some((a) =>
-    accounts.some((b) => b.id !== a.id && b.currency !== a.currency),
-  )
+  // Alcanza con tener una cuenta: si todavía no tenés una en la otra moneda,
+  // se crea desde el mismo modal (si no, no habría forma de empezar a comprar).
   const expenseCategories = useMemo(
     () => categories.filter((c) => c.kind !== 'income'),
     [categories],
@@ -275,19 +273,33 @@ export default function Accounts() {
   const [buyDate, setBuyDate] = useState(todayISO())
   const [buyNote, setBuyNote] = useState('')
   const [savingBuy, setSavingBuy] = useState(false)
+  // Nombre de la cuenta a crear cuando el destino es "+ Crear cuenta nueva".
+  const [buyNewName, setBuyNewName] = useState('')
+
+  /** Valor de "Se acredita en" cuando todavía no tenés cuenta en esa moneda. */
+  const NEW_ACCOUNT = '__new__'
 
   const buyFromAcc = accountsById[buyFromId]
   const buyToOptions = accounts.filter(
     (a) => a.id !== buyFromId && a.currency !== buyFromAcc?.currency,
   )
   const buyToAcc = accountsById[buyToId]
+  const creatingBuyToAcc = buyToId === NEW_ACCOUNT
+  /** La moneda que comprás: la de la cuenta destino, o la de la que vas a crear. */
+  const buyToCurrency: Currency | null = creatingBuyToAcc
+    ? buyFromAcc?.currency === 'USD'
+      ? 'ARS'
+      : 'USD'
+    : (buyToAcc?.currency ?? null)
 
   function openBuyCurrency() {
     const from = accounts[0]?.id ?? ''
     const fromAcc = accountsById[from]
     const to = accounts.find((a) => a.id !== from && a.currency !== fromAcc?.currency)
     setBuyFromId(from)
-    setBuyToId(to?.id ?? '')
+    // Sin cuenta en la otra moneda, arranca directo en "crear una".
+    setBuyToId(to?.id ?? NEW_ACCOUNT)
+    setBuyNewName(fromAcc?.currency === 'USD' ? 'Pesos' : 'Dólares')
     setBuyAmount('')
     setBuyReceived('')
     const defaultCat =
@@ -301,7 +313,7 @@ export default function Accounts() {
   // Sugerencia de cuánto se acredita en destino según la cotización.
   function onBuyAmountChange(v: string) {
     setBuyAmount(v)
-    if (buyFromAcc && buyToAcc) {
+    if (buyFromAcc && buyToCurrency) {
       const n = parseFloat(v)
       if (!isNaN(n)) {
         const rate = getUsdRate()
@@ -318,24 +330,44 @@ export default function Accounts() {
    * así ves el TC real de la operación aunque hayas retocado los números.
    */
   const buySummary = useMemo(() => {
-    if (!buyFromAcc || !buyToAcc) return null
+    if (!buyFromAcc || !buyToCurrency) return null
     const spent = parseFloat(buyAmount)
     const received = parseFloat(buyReceived)
     if (!(spent > 0) || !(received > 0)) return null
     return { spent, received, rate: spent / received }
-  }, [buyAmount, buyReceived, buyFromAcc, buyToAcc])
+  }, [buyAmount, buyReceived, buyFromAcc, buyToCurrency])
+
+  const canBuy =
+    !!buySummary && (creatingBuyToAcc ? buyNewName.trim().length > 0 : !!buyToAcc)
 
   async function saveBuyCurrency() {
-    if (!user || !buyFromAcc || !buyToAcc || !buySummary) return
+    if (!user || !buyFromAcc || !buyToCurrency || !buySummary || !canBuy) return
     const { spent, received, rate } = buySummary
     setSavingBuy(true)
     try {
+      // Si todavía no tenías cuenta en la moneda que comprás, se crea ahora:
+      // ahí quedan los dólares y desde ahí se puede pagar una tarjeta.
+      const target = creatingBuyToAcc
+        ? await createAccount(
+            {
+              name: buyNewName.trim(),
+              icon: buyToCurrency === 'USD' ? '💵' : '🏦',
+              color: '#22c55e',
+              type: 'bank',
+              currency: buyToCurrency,
+              initial_balance: 0,
+              sort_order: accounts.length,
+            },
+            user.id,
+          )
+        : buyToAcc
+
       await buyCurrency(
         {
           fromAccountId: buyFromAcc.id,
-          toAccountId: buyToAcc.id,
+          toAccountId: target.id,
           fromCurrency: buyFromAcc.currency,
-          toCurrency: buyToAcc.currency,
+          toCurrency: target.currency,
           spentAmount: spent,
           receivedAmount: received,
           categoryId: buyCategoryId || null,
@@ -343,7 +375,7 @@ export default function Accounts() {
           // Sin nota, la descripción deja el TC a la vista en el historial.
           description:
             buyNote.trim() ||
-            `Compra ${formatMoney(received, buyToAcc.currency)} a ${formatMoney(
+            `Compra ${formatMoney(received, target.currency)} a ${formatMoney(
               rate,
               buyFromAcc.currency,
             )}`,
@@ -351,6 +383,7 @@ export default function Accounts() {
         user.id,
       )
       setBuyOpen(false)
+      await reloadAccounts()
       await load()
     } finally {
       setSavingBuy(false)
@@ -471,7 +504,7 @@ export default function Accounts() {
             </button>
           )}
 
-          {crossCurrencyPairExists && (
+          {accounts.length >= 1 && (
             <button
               onClick={openBuyCurrency}
               className="btn-ghost mt-2 w-full"
@@ -783,8 +816,15 @@ export default function Accounts() {
               className="input"
               value={buyFromId}
               onChange={(e) => {
+                const from = accountsById[e.target.value]
                 setBuyFromId(e.target.value)
-                setBuyToId('')
+                // Al cambiar el origen cambia la moneda que comprás: se elige
+                // la primera cuenta compatible, o crear una nueva.
+                const to = accounts.find(
+                  (a) => a.id !== e.target.value && a.currency !== from?.currency,
+                )
+                setBuyToId(to?.id ?? NEW_ACCOUNT)
+                setBuyNewName(from?.currency === 'USD' ? 'Pesos' : 'Dólares')
               }}
             >
               {accounts.map((a) => (
@@ -802,19 +842,32 @@ export default function Accounts() {
               value={buyToId}
               onChange={(e) => setBuyToId(e.target.value)}
             >
-              <option value="">Elegí una cuenta</option>
               {buyToOptions.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.icon} {a.name} ({a.currency})
                 </option>
               ))}
+              <option value={NEW_ACCOUNT}>
+                + Crear cuenta nueva {buyToCurrency ? `en ${buyToCurrency}` : ''}
+              </option>
             </select>
-            {buyToOptions.length === 0 && (
-              <p className="mt-1 text-xs text-slate-500">
-                No hay ninguna cuenta en otra moneda. Creá una primero con “+ Nueva”.
-              </p>
-            )}
           </div>
+
+          {creatingBuyToAcc && (
+            <div>
+              <label className="label">Nombre de la cuenta nueva</label>
+              <input
+                className="input"
+                value={buyNewName}
+                onChange={(e) => setBuyNewName(e.target.value)}
+                placeholder="Ej: Dólares NX"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Se crea una cuenta de banco en {buyToCurrency} con saldo 0 y ahí entran
+                los {buyToCurrency} de esta compra.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="label">
@@ -832,7 +885,7 @@ export default function Accounts() {
 
           <div>
             <label className="label">
-              Cuánto recibís {buyToAcc ? `(${buyToAcc.currency})` : ''}
+              Cuánto recibís {buyToCurrency ? `(${buyToCurrency})` : ''}
             </label>
             <input
               className="input"
@@ -884,7 +937,7 @@ export default function Accounts() {
             />
           </div>
 
-          {buySummary && buyFromAcc && buyToAcc && (
+          {buySummary && buyFromAcc && buyToCurrency && (
             <div className="rounded-xl bg-slate-800/60 p-3 text-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-slate-400">Gastás</span>
@@ -895,23 +948,26 @@ export default function Accounts() {
               <div className="flex items-center justify-between gap-2">
                 <span className="text-slate-400">Se te acreditan</span>
                 <span className="font-semibold text-emerald-300">
-                  {formatMoney(buySummary.received, buyToAcc.currency)}
+                  {formatMoney(buySummary.received, buyToCurrency)}
                 </span>
               </div>
               <div className="mt-1 border-t border-white/5 pt-1 text-xs text-slate-400">
                 Tipo de cambio: {formatMoney(buySummary.rate, buyFromAcc.currency)} por
-                cada {formatMoney(1, buyToAcc.currency)}
+                cada {formatMoney(1, buyToCurrency)}
               </div>
               <div className="mt-1 text-xs text-slate-500">
-                Los {buyToAcc.currency} quedan en {buyToAcc.icon} {buyToAcc.name} y podés
-                usarlos para pagar el resumen de una tarjeta.
+                Los {buyToCurrency} quedan en{' '}
+                {creatingBuyToAcc
+                  ? `la cuenta nueva "${buyNewName.trim() || '…'}"`
+                  : `${buyToAcc.icon} ${buyToAcc.name}`}{' '}
+                y podés usarlos para pagar el resumen de una tarjeta.
               </div>
             </div>
           )}
 
           <button
             onClick={saveBuyCurrency}
-            disabled={savingBuy || !buySummary}
+            disabled={savingBuy || !canBuy}
             className="btn-primary w-full disabled:opacity-50"
           >
             {savingBuy ? 'Guardando…' : 'Comprar'}

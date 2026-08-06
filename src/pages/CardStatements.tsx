@@ -186,22 +186,6 @@ export default function CardStatements() {
     })
   }
 
-  function addLine() {
-    const first = payTarget?.totals[0]
-    const acc = payFromAccounts[0]
-    const currency = first?.currency ?? card?.currency ?? 'ARS'
-    setLines((prev) => [
-      ...prev,
-      {
-        key: newKey(),
-        accountId: acc?.id ?? '',
-        amount: '',
-        applied: '',
-        appliedCurrency: currency,
-      },
-    ])
-  }
-
   /** Cuánto quedó cubierto de cada moneda del resumen con lo que hay cargado. */
   const coverage = useMemo(() => {
     if (!payTarget) return []
@@ -218,17 +202,38 @@ export default function CardStatements() {
     })
   }, [payTarget, lines])
 
-  // El pago es siempre del 100%: se confirma recién cuando no falta nada.
-  const canConfirm =
-    lines.length > 0 &&
-    lines.every((l) => num(l.applied) > 0 && num(l.amount) > 0) &&
-    coverage.every((c) => Math.abs(c.missing) < 0.01)
+  /**
+   * Suma una cuenta más al pago, ya cargada con lo que todavía falta cubrir (o
+   * vacía si con lo que hay ya se cubre todo).
+   */
+  function addLine() {
+    const pending = coverage.find((c) => c.missing > 0.01)
+    const currency = pending?.currency ?? payTarget?.totals[0]?.currency ?? 'ARS'
+    const acc =
+      payFromAccounts.find((a) => a.currency === currency) ?? payFromAccounts[0]
+    const applied = pending ? String(pending.missing) : ''
+    setLines((prev) => [
+      ...prev,
+      {
+        key: newKey(),
+        accountId: acc?.id ?? '',
+        amount: convertText(applied, currency, acc?.currency ?? currency),
+        applied,
+        appliedCurrency: currency,
+      },
+    ])
+  }
+
+  // El monto es libre: podés pagar el mínimo, una parte o el total. Solo hace
+  // falta que cada renglón tenga algo cargado.
+  const usableLines = lines.filter((l) => num(l.applied) > 0 && num(l.amount) > 0)
+  const canConfirm = usableLines.length > 0
 
   async function savePay() {
     if (!user || !card || !payTarget || !canConfirm) return
     setSavingPay(true)
     try {
-      const payload: StatementPaymentLine[] = lines.map((l) => ({
+      const payload: StatementPaymentLine[] = usableLines.map((l) => ({
         paidFromAccountId: l.accountId || null,
         amount: num(l.amount),
         currency: lineCurrency(l),
@@ -304,7 +309,9 @@ export default function CardStatements() {
         <div className="space-y-3">
           {statements.map((st) => {
             const isExp = expanded === st.closeISO
-            const payable = st.phase === 'closed' && st.payments.length === 0
+            // Se puede pagar cualquier resumen, incluso el ciclo abierto (pago
+            // adelantado), mientras no tenga ya un pago registrado.
+            const payable = st.payments.length === 0
             const title =
               st.phase === 'current'
                 ? 'Ciclo actual'
@@ -437,6 +444,25 @@ export default function CardStatements() {
                               </div>
                             )
                           })}
+
+                          {/* Si el pago no llegó al total, se ve cuánto falta. */}
+                          {st.totals.map((t) => {
+                            const paid =
+                              st.covered.find((c) => c.currency === t.currency)
+                                ?.amount ?? 0
+                            const missing = Math.round((t.amount - paid) * 100) / 100
+                            if (missing <= 0.01) return null
+                            return (
+                              <div
+                                key={t.currency}
+                                className="mt-1 border-t border-white/5 pt-1 text-xs text-orange-300"
+                              >
+                                Cubre {formatMoney(paid, t.currency)} de{' '}
+                                {formatMoney(t.amount, t.currency)} · queda debiendo{' '}
+                                {formatMoney(missing, t.currency)}
+                              </div>
+                            )
+                          })}
                         </div>
                         <button
                           onClick={() => undoPay(st)}
@@ -472,27 +498,34 @@ export default function CardStatements() {
                 Resumen del {formatShort(payTarget.closeISO)}
               </div>
               {coverage.map((c) => (
-                <div key={c.currency}>
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-lg font-bold text-slate-100">
-                      {formatMoney(c.total, c.currency)}
-                    </span>
-                    <span
-                      className={
-                        Math.abs(c.missing) < 0.01
-                          ? 'text-xs text-emerald-300'
-                          : 'text-xs text-orange-300'
-                      }
-                    >
-                      {Math.abs(c.missing) < 0.01
-                        ? 'cubierto ✓'
-                        : c.missing > 0
-                          ? `falta ${formatMoney(c.missing, c.currency)}`
-                          : `te pasaste ${formatMoney(-c.missing, c.currency)}`}
-                    </span>
-                  </div>
+                <div key={c.currency} className="flex items-baseline justify-between">
+                  <span className="text-lg font-bold text-slate-100">
+                    {formatMoney(c.total, c.currency)}
+                  </span>
+                  <span
+                    className={
+                      Math.abs(c.missing) < 0.01
+                        ? 'text-xs text-emerald-300'
+                        : 'text-xs text-slate-400'
+                    }
+                  >
+                    {Math.abs(c.missing) < 0.01
+                      ? 'lo pagás entero ✓'
+                      : c.missing > 0
+                        ? `pagás ${formatMoney(c.covered, c.currency)} · queda ${formatMoney(
+                            c.missing,
+                            c.currency,
+                          )}`
+                        : `pagás ${formatMoney(c.covered, c.currency)} · ${formatMoney(
+                            -c.missing,
+                            c.currency,
+                          )} de más`}
+                  </span>
                 </div>
               ))}
+              <p className="pt-1 text-xs text-slate-500">
+                El monto es libre: podés pagar el total, el mínimo o una parte.
+              </p>
             </div>
 
             <div className="space-y-3">
@@ -609,7 +642,7 @@ export default function CardStatements() {
             </button>
             {!canConfirm && (
               <p className="text-center text-xs text-slate-500">
-                El pago tiene que cubrir el total de cada moneda del resumen.
+                Cargá cuánto pagás en al menos una cuenta.
               </p>
             )}
           </div>

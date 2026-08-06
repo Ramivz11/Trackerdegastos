@@ -120,12 +120,13 @@ export interface Statement {
   payments: StatementPayment[]
   /** Cuánto cubrieron esos pagos, por moneda del resumen. */
   covered: CurrencyTotal[]
-  /** true si cada subtotal quedó cubierto (el pago siempre es del 100%). */
+  /**
+   * true si el resumen tiene algún pago registrado. El monto del pago es libre
+   * (podés pagar el mínimo, o una parte), así que no se exige que cubra el
+   * total: para eso está `covered`, que muestra cuánto se pagó de cada moneda.
+   */
   isPaid: boolean
 }
-
-/** Diferencias menores a un centavo no cuentan: son ruido de redondeo. */
-const EPSILON = 0.005
 
 /**
  * Junta montos por moneda y devuelve los subtotales, con `first` adelante (la
@@ -212,12 +213,7 @@ export function buildStatements(
       phase,
       payments: cyclePayments,
       covered,
-      isPaid:
-        cyclePayments.length > 0 &&
-        totals.every((t) => {
-          const c = covered.find((x) => x.currency === t.currency)?.amount ?? 0
-          return c >= t.amount - EPSILON
-        }),
+      isPaid: cyclePayments.length > 0,
     })
   }
   statements.sort((a, b) => b.closeISO.localeCompare(a.closeISO))
