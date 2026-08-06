@@ -42,6 +42,22 @@ export function netArs(
   return toArs(netAmount(t), t.currency, t.ars_rate)
 }
 
+/**
+ * Divide un gasto en partes iguales entre `people` personas (incluyéndote).
+ * Devuelve tu parte y lo que esperás recuperar del resto.
+ *
+ * El redondeo a 2 decimales queda de tu lado, así `mine + owed` siempre suma
+ * el total exacto que salió de la cuenta y no aparecen centavos fantasma.
+ */
+export function splitShare(
+  total: number,
+  people: number,
+): { mine: number; owed: number } {
+  if (!(total > 0) || people <= 1) return { mine: Math.max(total, 0), owed: 0 }
+  const owed = Math.round(((total * (people - 1)) / people) * 100) / 100
+  return { mine: Math.max(total - owed, 0), owed }
+}
+
 /** Equivalente en ARS de lo que te deben por este movimiento. */
 export function reimbursableArs(
   t: Pick<Transaction, 'reimbursable_amount' | 'currency' | 'ars_rate'>,

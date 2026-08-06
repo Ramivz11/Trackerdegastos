@@ -11,7 +11,7 @@ import {
   updateTransaction,
 } from '../lib/api'
 import { isShared, netAmount, netArs } from '../lib/amounts'
-import { buildInstallmentRows } from '../lib/statements'
+import { buildInstallmentRows, cardCurrencies, currencyLabel } from '../lib/statements'
 import { findDuplicate } from '../lib/duplicates'
 import { downloadCsv, transactionsToCsv } from '../lib/export'
 import { suggestCategory } from '../lib/rules'
@@ -45,6 +45,9 @@ export default function Transactions() {
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [accountId, setAccountId] = useState('')
+  // Normalmente es la moneda de la cuenta; en tarjetas se puede cambiar, porque
+  // una tarjeta en pesos también tiene consumos en dólares (Netflix, Steam…).
+  const [currency, setCurrency] = useState<Currency>('ARS')
   const [date, setDate] = useState(todayISO())
   const [description, setDescription] = useState('')
   const [installments, setInstallments] = useState(1)
@@ -132,6 +135,7 @@ export default function Transactions() {
     setAmount('')
     setCategoryId(categories.find((c) => c.kind !== 'income')?.id ?? '')
     setAccountId(accounts[0]?.id ?? '')
+    setCurrency(accounts[0]?.currency ?? 'ARS')
     setDate(todayISO())
     setDescription('')
     setInstallments(1)
@@ -145,6 +149,7 @@ export default function Transactions() {
     setAmount(String(t.amount))
     setCategoryId(t.category_id ?? '')
     setAccountId(t.account_id ?? '')
+    setCurrency(t.currency)
     setDate(t.transaction_date)
     setDescription(t.description ?? '')
     setInstallments(1)
@@ -241,7 +246,9 @@ export default function Transactions() {
     setSaving(true)
     try {
       const acc = accountsById[accountId]
-      const currency: Currency = acc?.currency ?? 'ARS'
+      // Solo las tarjetas admiten una moneda distinta a la de la cuenta.
+      const txCurrency: Currency =
+        acc?.type === 'card' ? currency : (acc?.currency ?? 'ARS')
       // Lo que te tienen que devolver nunca puede superar lo que pagaste.
       const owed =
         type === 'expense'
@@ -250,8 +257,8 @@ export default function Transactions() {
       const base = {
         category_id: categoryId || null,
         account_id: accountId || null,
-        currency,
-        ars_rate: rateFor(currency),
+        currency: txCurrency,
+        ars_rate: rateFor(txCurrency),
         description: description.trim() || null,
         type,
         // Solo se manda si hay foto, así la carga normal sigue andando en bases
@@ -586,7 +593,11 @@ export default function Transactions() {
               <select
                 className="input"
                 value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
+                onChange={(e) => {
+                  setAccountId(e.target.value)
+                  // La moneda vuelve a la de la cuenta elegida.
+                  setCurrency(accountsById[e.target.value]?.currency ?? 'ARS')
+                }}
               >
                 <option value="">Sin cuenta</option>
                 {accounts.map((a) => (
@@ -595,6 +606,35 @@ export default function Transactions() {
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Una tarjeta en pesos también tiene consumos en dólares. */}
+          {accountsById[accountId]?.type === 'card' && (
+            <div>
+              <label className="label">Moneda del consumo</label>
+              <div className="grid grid-cols-2 gap-2">
+                {cardCurrencies(accountsById[accountId].currency).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setCurrency(c)}
+                    className={`btn py-2 text-sm ${
+                      currency === c
+                        ? 'bg-brand text-white'
+                        : 'bg-slate-700/60 text-slate-300'
+                    }`}
+                  >
+                    {currencyLabel(c)}
+                  </button>
+                ))}
+              </div>
+              {currency !== accountsById[accountId].currency && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Va a un subtotal aparte del resumen, que después podés pagar en{' '}
+                  {currency}.
+                </p>
+              )}
             </div>
           )}
 

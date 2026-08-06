@@ -869,6 +869,200 @@ exception when others then
 end;
 $$;
 
+-- =====================================================================
+-- v3 — Pago de resúmenes repartido entre varias cuentas y monedas.
+-- Idempotente como todo lo anterior: se puede volver a correr sin miedo.
+-- =====================================================================
+
+-- ---------- statement_payments: de "un pago por resumen" a N líneas ----------
+-- Cada fila pasa a ser UNA línea del pago (ej: una parte en pesos desde el banco
+-- y otra en dólares desde la caja de ahorro en USD). Se guardan dos pares de
+-- valores, igual que en `transfers`:
+--
+--   amount + currency                  → lo que SALE de paid_from_account_id,
+--                                        en la moneda de esa cuenta.
+--   applied_amount + applied_currency  → cuánto CUBRE del resumen, en una de
+--                                        las monedas del resumen.
+--
+-- Cuando las dos monedas coinciden los montos son iguales; cuando no, la
+-- diferencia entre ambos es el tipo de cambio al que pagaste.
+alter table public.statement_payments
+  add column if not exists currency text not null default 'ARS';
+alter table public.statement_payments
+  add column if not exists applied_amount numeric(14, 2);
+alter table public.statement_payments
+  add column if not exists applied_currency text;
+-- El movimiento que representa esta línea en el historial (null si el pago se
+-- registró "sin cuenta", solo para marcar el resumen como pagado).
+alter table public.statement_payments
+  add column if not exists transaction_id uuid
+    references public.transactions (id) on delete cascade;
+
+-- Backfill: los pagos viejos eran siempre por el total y en la moneda de la
+-- tarjeta, así que sale = cubre.
+update public.statement_payments sp
+set applied_amount = sp.amount,
+    currency = a.currency,
+    applied_currency = a.currency
+from public.accounts a
+where a.id = sp.account_id
+  and sp.applied_amount is null;
+
+alter table public.statement_payments
+  drop constraint if exists statement_payments_account_id_cycle_close_key;
+create index if not exists idx_sp_cycle
+  on public.statement_payments (account_id, cycle_close);
+
+do $$
+begin
+  alter table public.statement_payments
+    add constraint statement_payments_currency_allowed
+    check (currency in ('ARS','USD','EUR','BRL','CLP','COP','MXN','UYU'));
+exception when duplicate_object then null;
+end;
+$$;
+
+do $$
+begin
+  alter table public.statement_payments
+    add constraint statement_payments_applied_currency_allowed
+    check (applied_currency in ('ARS','USD','EUR','BRL','CLP','COP','MXN','UYU'));
+exception when duplicate_object then null;
+end;
+$$;
+
+-- ---------- El pago ahora es un movimiento, no un descuento del RPC ----------
+-- Antes el pago solo existía en statement_payments y `account_balances()` lo
+-- restaba a mano; era invisible en el historial. Ahora cada línea con cuenta
+-- crea una transacción marcada como `is_transfer` (se ve en Movimientos, no
+-- suma en Reportes) y el saldo sale de ahí.
+--
+-- Backfill de los pagos viejos: les creamos el movimiento equivalente para que
+-- los saldos den exactamente lo mismo que antes de esta migración.
+do $$
+declare
+  sp record;
+  new_tx uuid;
+  rate numeric;
+begin
+  for sp in
+    select p.id, p.user_id, p.paid_from_account_id, p.amount, p.currency,
+           p.paid_date, c.name as card_name
+    from public.statement_payments p
+    join public.accounts c on c.id = p.account_id
+    where p.transaction_id is null
+      and p.paid_from_account_id is not null
+  loop
+    -- Cotización congelada: la de los ajustes del usuario, o 1 si no hay.
+    if sp.currency = 'ARS' then
+      rate := 1;
+    else
+      select coalesce((s.rates ->> sp.currency)::numeric, 1) into rate
+      from public.user_settings s
+      where s.user_id = sp.user_id;
+      rate := coalesce(rate, 1);
+    end if;
+
+    insert into public.transactions (
+      user_id, category_id, account_id, amount, currency, ars_rate,
+      description, transaction_date, type, is_transfer
+    ) values (
+      sp.user_id, null, sp.paid_from_account_id, sp.amount, sp.currency, rate,
+      'Pago resumen ' || sp.card_name, sp.paid_date, 'expense', true
+    )
+    returning id into new_tx;
+
+    update public.statement_payments set transaction_id = new_tx where id = sp.id;
+  end loop;
+end;
+$$;
+
+-- Saldos sin el término de statement_payments: ya lo cubre la transacción.
+create or replace function public.account_balances()
+returns table (account_id uuid, balance numeric)
+language sql
+security invoker
+stable
+as $$
+  select
+    a.id as account_id,
+    a.initial_balance
+    + coalesce((
+        select sum(case when t.type = 'income' then t.amount else -t.amount end)
+        from public.transactions t
+        where t.account_id = a.id
+      ), 0)
+    + coalesce((
+        select sum(tr.to_amount)
+        from public.transfers tr
+        where tr.to_account_id = a.id
+      ), 0)
+    - coalesce((
+        select sum(tr.amount)
+        from public.transfers tr
+        where tr.from_account_id = a.id
+      ), 0)
+    + coalesce((
+        select sum(rb.amount)
+        from public.reimbursements rb
+        where rb.account_id = a.id
+      ), 0) as balance
+  from public.accounts a
+  where a.user_id in (select public.shared_user_ids());
+$$;
+
+-- Ídem para la serie de patrimonio.
+create or replace function public.net_worth_series(months integer default 12)
+returns table (month date, currency text, balance numeric)
+language sql
+security invoker
+stable
+as $$
+  with bounds as (
+    select least(
+      (date_trunc('month', current_date) - ((n) || ' months')::interval
+        + interval '1 month - 1 day')::date,
+      current_date
+    ) as cutoff
+    from generate_series(greatest(months, 1) - 1, 0, -1) as n
+  ),
+  acc as (
+    select id, currency, initial_balance
+    from public.accounts
+    where user_id in (select public.shared_user_ids())
+  )
+  select
+    b.cutoff as month,
+    a.currency,
+    sum(
+      a.initial_balance
+      + coalesce((
+          select sum(case when t.type = 'income' then t.amount else -t.amount end)
+          from public.transactions t
+          where t.account_id = a.id and t.transaction_date <= b.cutoff
+        ), 0)
+      + coalesce((
+          select sum(tr.to_amount)
+          from public.transfers tr
+          where tr.to_account_id = a.id and tr.transfer_date <= b.cutoff
+        ), 0)
+      - coalesce((
+          select sum(tr.amount)
+          from public.transfers tr
+          where tr.from_account_id = a.id and tr.transfer_date <= b.cutoff
+        ), 0)
+      + coalesce((
+          select sum(rb.amount)
+          from public.reimbursements rb
+          where rb.account_id = a.id and rb.received_date <= b.cutoff
+        ), 0)
+    ) as balance
+  from bounds b
+  cross join acc a
+  group by b.cutoff, a.currency
+  order by b.cutoff, a.currency;
+$$;
+
 -- ---------- Tarea diaria: avisos push de vencimientos ----------
 -- Requiere tu URL de proyecto y tu service_role key, así que se activa a mano.
 -- Copiá esto en el SQL Editor reemplazando los dos valores (ver README):

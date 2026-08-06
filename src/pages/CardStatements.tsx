@@ -5,13 +5,60 @@ import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import {
   createStatementPayment,
-  deleteStatementPayment,
+  deleteStatementPaymentsForCycle,
   fetchStatementPayments,
   fetchTransactionsByAccount,
+  type StatementPaymentLine,
 } from '../lib/api'
-import { formatMoney, todayISO } from '../lib/format'
-import { buildStatements, formatShort, type Statement } from '../lib/statements'
-import type { StatementPayment, TransactionWithCategory } from '../types'
+import { formatMoney, rateFor, todayISO } from '../lib/format'
+import {
+  buildStatements,
+  formatShort,
+  type CurrencyTotal,
+  type Statement,
+} from '../lib/statements'
+import type { Currency, StatementPayment, TransactionWithCategory } from '../types'
+
+/** "$ 500.000 + US$ 30" — los subtotales de un resumen en una sola línea. */
+function formatTotals(totals: CurrencyTotal[]): string {
+  if (totals.length === 0) return formatMoney(0, 'ARS')
+  return totals.map((t) => formatMoney(t.amount, t.currency)).join(' + ')
+}
+
+/** Una línea del modal de pago, en texto (lo que se está tipeando). */
+interface PayLine {
+  key: string
+  /** '' = sin cuenta: cubre el resumen pero no descuenta de ningún saldo. */
+  accountId: string
+  /** Lo que sale de la cuenta. */
+  amount: string
+  /** Lo que cubre del resumen. */
+  applied: string
+  appliedCurrency: Currency
+}
+
+let lineSeq = 0
+function newKey() {
+  return `l${lineSeq++}`
+}
+
+function num(v: string): number {
+  const n = parseFloat(v)
+  return isNaN(n) ? 0 : n
+}
+
+/** Convierte un monto entre monedas con las cotizaciones actuales de Ajustes. */
+function convert(amount: number, from: Currency, to: Currency): number {
+  if (from === to) return amount
+  const value = (amount * rateFor(from)) / rateFor(to)
+  return Math.round(value * 100) / 100
+}
+
+/** Igual que `convert` pero sobre el texto del input: vacío se queda vacío. */
+function convertText(v: string, from: Currency, to: Currency): string {
+  if (v.trim() === '') return ''
+  return String(convert(num(v), from, to))
+}
 
 export default function CardStatements() {
   const { id = '' } = useParams()
@@ -49,10 +96,15 @@ export default function CardStatements() {
     [card, txs, payments],
   )
 
-  // ----- Modal: marcar resumen como pagado -----
+  const accountsById = useMemo(
+    () => Object.fromEntries(accounts.map((a) => [a.id, a])),
+    [accounts],
+  )
+
+  // ----- Modal: registrar el pago del resumen -----
   const [payOpen, setPayOpen] = useState(false)
   const [payTarget, setPayTarget] = useState<Statement | null>(null)
-  const [fromId, setFromId] = useState('')
+  const [lines, setLines] = useState<PayLine[]>([])
   const [payDate, setPayDate] = useState(todayISO())
   const [savingPay, setSavingPay] = useState(false)
 
@@ -61,24 +113,134 @@ export default function CardStatements() {
     [accounts],
   )
 
+  /** Moneda de la que sale la plata en esta línea. */
+  const lineCurrency = useCallback(
+    (l: PayLine): Currency =>
+      accountsById[l.accountId]?.currency ?? l.appliedCurrency,
+    [accountsById],
+  )
+
   function openPay(st: Statement) {
     setPayTarget(st)
-    setFromId(payFromAccounts[0]?.id ?? '')
+    // Una línea por moneda del resumen, ya cargada con su subtotal y con la
+    // primera cuenta que tengas en esa misma moneda.
+    setLines(
+      st.totals.map((t) => {
+        const acc =
+          payFromAccounts.find((a) => a.currency === t.currency) ?? payFromAccounts[0]
+        const amount = acc ? convert(t.amount, t.currency, acc.currency) : t.amount
+        return {
+          key: newKey(),
+          accountId: acc?.id ?? '',
+          amount: String(amount),
+          applied: String(t.amount),
+          appliedCurrency: t.currency,
+        }
+      }),
+    )
     setPayDate(todayISO())
     setPayOpen(true)
   }
 
+  function patchLine(key: string, patch: (l: PayLine) => PayLine) {
+    setLines((prev) => prev.map((l) => (l.key === key ? patch(l) : l)))
+  }
+
+  /** Al cambiar la cuenta cambia la moneda de salida: se recalcula el otro monto. */
+  function onAccountChange(key: string, accountId: string) {
+    patchLine(key, (l) => {
+      const to = accountsById[accountId]?.currency ?? l.appliedCurrency
+      return {
+        ...l,
+        accountId,
+        amount: convertText(l.applied, l.appliedCurrency, to),
+      }
+    })
+  }
+
+  function onAmountChange(key: string, v: string) {
+    patchLine(key, (l) => {
+      const from = lineCurrency(l)
+      // Misma moneda: los dos montos son el mismo número, se espejan.
+      if (from === l.appliedCurrency) return { ...l, amount: v, applied: v }
+      return { ...l, amount: v, applied: convertText(v, from, l.appliedCurrency) }
+    })
+  }
+
+  function onAppliedChange(key: string, v: string) {
+    patchLine(key, (l) => {
+      const from = lineCurrency(l)
+      if (from === l.appliedCurrency) return { ...l, amount: v, applied: v }
+      return { ...l, applied: v }
+    })
+  }
+
+  function onAppliedCurrencyChange(key: string, currency: Currency) {
+    patchLine(key, (l) => {
+      const from = lineCurrency({ ...l, appliedCurrency: currency })
+      return {
+        ...l,
+        appliedCurrency: currency,
+        amount: convertText(l.applied, currency, from),
+      }
+    })
+  }
+
+  function addLine() {
+    const first = payTarget?.totals[0]
+    const acc = payFromAccounts[0]
+    const currency = first?.currency ?? card?.currency ?? 'ARS'
+    setLines((prev) => [
+      ...prev,
+      {
+        key: newKey(),
+        accountId: acc?.id ?? '',
+        amount: '',
+        applied: '',
+        appliedCurrency: currency,
+      },
+    ])
+  }
+
+  /** Cuánto quedó cubierto de cada moneda del resumen con lo que hay cargado. */
+  const coverage = useMemo(() => {
+    if (!payTarget) return []
+    return payTarget.totals.map((t) => {
+      const covered = lines
+        .filter((l) => l.appliedCurrency === t.currency)
+        .reduce((s, l) => s + num(l.applied), 0)
+      return {
+        currency: t.currency,
+        total: t.amount,
+        covered,
+        missing: Math.round((t.amount - covered) * 100) / 100,
+      }
+    })
+  }, [payTarget, lines])
+
+  // El pago es siempre del 100%: se confirma recién cuando no falta nada.
+  const canConfirm =
+    lines.length > 0 &&
+    lines.every((l) => num(l.applied) > 0 && num(l.amount) > 0) &&
+    coverage.every((c) => Math.abs(c.missing) < 0.01)
+
   async function savePay() {
-    if (!user || !card || !payTarget) return
+    if (!user || !card || !payTarget || !canConfirm) return
     setSavingPay(true)
     try {
+      const payload: StatementPaymentLine[] = lines.map((l) => ({
+        paidFromAccountId: l.accountId || null,
+        amount: num(l.amount),
+        currency: lineCurrency(l),
+        appliedAmount: num(l.applied),
+        appliedCurrency: l.appliedCurrency,
+      }))
       await createStatementPayment(
         {
-          account_id: card.id,
-          cycle_close: payTarget.closeISO,
-          amount: payTarget.total,
-          paid_from_account_id: fromId || null,
-          paid_date: payDate,
+          card: { id: card.id, name: card.name },
+          cycleClose: payTarget.closeISO,
+          paidDate: payDate,
+          lines: payload,
         },
         user.id,
       )
@@ -90,9 +252,9 @@ export default function CardStatements() {
   }
 
   async function undoPay(st: Statement) {
-    if (!st.payment) return
-    if (!confirm('¿Deshacer el pago de este resumen?')) return
-    await deleteStatementPayment(st.payment.id)
+    if (!card) return
+    if (!confirm('¿Deshacer el pago de este resumen? Se borran sus movimientos.')) return
+    await deleteStatementPaymentsForCycle(card.id, st.closeISO)
     await load()
   }
 
@@ -142,7 +304,7 @@ export default function CardStatements() {
         <div className="space-y-3">
           {statements.map((st) => {
             const isExp = expanded === st.closeISO
-            const payable = st.phase === 'closed'
+            const payable = st.phase === 'closed' && st.payments.length === 0
             const title =
               st.phase === 'current'
                 ? 'Ciclo actual'
@@ -169,7 +331,7 @@ export default function CardStatements() {
                           próximo
                         </span>
                       )}
-                      {st.payment && (
+                      {st.isPaid && (
                         <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
                           pagado
                         </span>
@@ -184,7 +346,7 @@ export default function CardStatements() {
                   </div>
                   <div className="shrink-0 text-right">
                     <div className="font-bold text-slate-100">
-                      {formatMoney(st.total, card.currency)}
+                      {formatTotals(st.totals)}
                     </div>
                     <div className="text-[10px] text-slate-500">
                       {isExp ? 'ocultar ▲' : 'detalle ▼'}
@@ -220,26 +382,76 @@ export default function CardStatements() {
                             </div>
                           </div>
                           <div className="shrink-0 text-slate-200">
-                            {formatMoney(Number(t.amount), card.currency)}
+                            {formatMoney(Number(t.amount), t.currency)}
                           </div>
                         </div>
                       )
                     })}
 
-                    {st.payment ? (
-                      <button
-                        onClick={() => undoPay(st)}
-                        className="btn-ghost mt-2 w-full text-sm"
-                      >
-                        Deshacer pago
-                      </button>
+                    {/* Subtotales, cuando el resumen tiene más de una moneda */}
+                    {st.totals.length > 1 && (
+                      <div className="mt-2 space-y-1 rounded-xl bg-slate-800/60 p-3 text-sm">
+                        {st.totals.map((t) => (
+                          <div key={t.currency} className="flex justify-between">
+                            <span className="text-slate-400">
+                              Subtotal en {t.currency}
+                            </span>
+                            <span className="font-semibold text-slate-100">
+                              {formatMoney(t.amount, t.currency)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {st.payments.length > 0 ? (
+                      <div className="mt-2 space-y-2">
+                        <div className="rounded-xl bg-emerald-500/10 p-3 text-sm">
+                          <div className="mb-1 text-xs font-medium text-emerald-300">
+                            Pagado el {formatShort(st.payments[0].paid_date)}
+                          </div>
+                          {st.payments.map((p) => {
+                            const from = p.paid_from_account_id
+                              ? accountsById[p.paid_from_account_id]
+                              : null
+                            const cross = p.currency !== p.applied_currency
+                            return (
+                              <div
+                                key={p.id}
+                                className="flex items-center justify-between gap-2 py-0.5"
+                              >
+                                <span className="min-w-0 truncate text-slate-300">
+                                  {from ? `${from.icon} ${from.name}` : 'Sin cuenta'}
+                                </span>
+                                <span className="shrink-0 text-right text-slate-100">
+                                  {formatMoney(Number(p.amount), p.currency)}
+                                  {cross && (
+                                    <span className="ml-1 text-xs text-slate-400">
+                                      → {formatMoney(
+                                        Number(p.applied_amount),
+                                        p.applied_currency,
+                                      )}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        <button
+                          onClick={() => undoPay(st)}
+                          className="btn-ghost w-full text-sm"
+                        >
+                          Deshacer pago
+                        </button>
+                      </div>
                     ) : (
                       payable && (
                         <button
                           onClick={() => openPay(st)}
                           className="btn-primary mt-2 w-full text-sm"
                         >
-                          Marcar como pagado
+                          Registrar pago
                         </button>
                       )
                     )}
@@ -251,40 +463,131 @@ export default function CardStatements() {
         </div>
       )}
 
-      {/* ----- Modal: marcar pagado ----- */}
-      <Modal
-        open={payOpen}
-        onClose={() => setPayOpen(false)}
-        title="Marcar resumen como pagado"
-      >
+      {/* ----- Modal: pagar el resumen repartido entre cuentas ----- */}
+      <Modal open={payOpen} onClose={() => setPayOpen(false)} title="Pagar resumen">
         {payTarget && (
           <div className="space-y-4">
-            <div className="rounded-xl bg-slate-800/60 p-3 text-sm">
+            <div className="space-y-1 rounded-xl bg-slate-800/60 p-3 text-sm">
               <div className="text-slate-400">
                 Resumen del {formatShort(payTarget.closeISO)}
               </div>
-              <div className="text-2xl font-bold text-slate-100">
-                {formatMoney(payTarget.total, card.currency)}
-              </div>
+              {coverage.map((c) => (
+                <div key={c.currency}>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-lg font-bold text-slate-100">
+                      {formatMoney(c.total, c.currency)}
+                    </span>
+                    <span
+                      className={
+                        Math.abs(c.missing) < 0.01
+                          ? 'text-xs text-emerald-300'
+                          : 'text-xs text-orange-300'
+                      }
+                    >
+                      {Math.abs(c.missing) < 0.01
+                        ? 'cubierto ✓'
+                        : c.missing > 0
+                          ? `falta ${formatMoney(c.missing, c.currency)}`
+                          : `te pasaste ${formatMoney(-c.missing, c.currency)}`}
+                    </span>
+                  </div>
+                </div>
+              ))}
             </div>
 
-            <div>
-              <label className="label">Pagar desde</label>
-              <select
-                className="input"
-                value={fromId}
-                onChange={(e) => setFromId(e.target.value)}
-              >
-                <option value="">Sin cuenta (solo marcar)</option>
-                {payFromAccounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.icon} {a.name} ({a.currency})
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-slate-500">
-                Se descuenta este monto de la cuenta elegida.
-              </p>
+            <div className="space-y-3">
+              {lines.map((l) => {
+                const from = lineCurrency(l)
+                const cross = from !== l.appliedCurrency
+                const salida = num(l.amount)
+                const cubre = num(l.applied)
+                return (
+                  <div key={l.key} className="space-y-2 rounded-xl bg-slate-800/40 p-3">
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="input flex-1"
+                        value={l.accountId}
+                        onChange={(e) => onAccountChange(l.key, e.target.value)}
+                      >
+                        <option value="">Sin cuenta (solo marcar)</option>
+                        {payFromAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.icon} {a.name} ({a.currency})
+                          </option>
+                        ))}
+                      </select>
+                      {lines.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLines((prev) => prev.filter((x) => x.key !== l.key))
+                          }
+                          className="shrink-0 rounded-lg px-2 py-1 text-lg text-slate-400"
+                          aria-label="Quitar esta cuenta"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="label">Sale ({from})</label>
+                        <input
+                          className="input"
+                          type="number"
+                          inputMode="decimal"
+                          value={l.amount}
+                          onChange={(e) => onAmountChange(l.key, e.target.value)}
+                          placeholder="0"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="label">Cubre</label>
+                        <div className="flex gap-1">
+                          <input
+                            className="input min-w-0 flex-1"
+                            type="number"
+                            inputMode="decimal"
+                            value={l.applied}
+                            onChange={(e) => onAppliedChange(l.key, e.target.value)}
+                            placeholder="0"
+                          />
+                          {payTarget.totals.length > 1 && (
+                            <select
+                              className="input w-20 shrink-0 px-1"
+                              value={l.appliedCurrency}
+                              onChange={(e) =>
+                                onAppliedCurrencyChange(
+                                  l.key,
+                                  e.target.value as Currency,
+                                )
+                              }
+                            >
+                              {payTarget.totals.map((t) => (
+                                <option key={t.currency} value={t.currency}>
+                                  {t.currency}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {cross && salida > 0 && cubre > 0 && (
+                      <p className="text-xs text-slate-500">
+                        Tipo de cambio: {formatMoney(cubre / salida, l.appliedCurrency)}{' '}
+                        por cada {formatMoney(1, from)}
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+
+              <button type="button" onClick={addLine} className="btn-ghost w-full text-sm">
+                + Agregar cuenta
+              </button>
             </div>
 
             <div>
@@ -299,11 +602,16 @@ export default function CardStatements() {
 
             <button
               onClick={savePay}
-              disabled={savingPay}
+              disabled={savingPay || !canConfirm}
               className="btn-primary w-full disabled:opacity-50"
             >
               {savingPay ? 'Guardando…' : 'Confirmar pago'}
             </button>
+            {!canConfirm && (
+              <p className="text-center text-xs text-slate-500">
+                El pago tiene que cubrir el total de cada moneda del resumen.
+              </p>
+            )}
           </div>
         )}
       </Modal>

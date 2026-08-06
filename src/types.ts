@@ -111,14 +111,30 @@ export interface Transaction {
   created_at: string
 }
 
-/** Pago de un resumen de tarjeta (un ciclo marcado como pagado). */
+/**
+ * Una línea del pago de un resumen de tarjeta. Un mismo resumen puede tener
+ * varias: por ejemplo una parte en pesos desde el banco y otra en dólares desde
+ * la caja de ahorro en USD.
+ *
+ * Hay dos pares de valores, igual que en `Transfer`:
+ * - `amount` + `currency`: lo que sale de `paid_from_account_id`.
+ * - `applied_amount` + `applied_currency`: cuánto cubre del resumen.
+ *
+ * Si las dos monedas coinciden los montos son iguales; si no, la relación entre
+ * ambos es el tipo de cambio al que pagaste.
+ */
 export interface StatementPayment {
   id: string
   user_id: string
   account_id: string // la tarjeta
   cycle_close: string // YYYY-MM-DD, fecha de cierre que identifica el resumen
   amount: number
+  currency: Currency
+  applied_amount: number
+  applied_currency: Currency
   paid_from_account_id: string | null
+  /** Movimiento que representa esta línea en el historial (null si no salió de una cuenta). */
+  transaction_id: string | null
   paid_date: string // YYYY-MM-DD
   created_at: string
 }

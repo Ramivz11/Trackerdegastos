@@ -17,8 +17,14 @@ y se despliega en **Netlify**.
 - 📲 **Notificaciones push** de vencimientos con la app cerrada.
 - 📷 **Foto del ticket**: sacás la foto y se precargan monto, comercio y fecha.
 - 🪄 **Reglas de auto-categorización**: “si la nota dice Uber → Transporte”.
+- 💳 **Tarjetas de crédito**: resúmenes por ciclo de cierre, compras en cuotas y
+  subtotales separados en pesos y en dólares. El pago del resumen se puede
+  repartir entre varias cuentas y monedas (una parte en $, otra en US$) y queda
+  como movimiento en el historial sin contarse dos veces como gasto.
 - 💵 **Cotizaciones automáticas** (dolarapi.com: blue, oficial, MEP, cripto…) y
   moneda de visualización que convierte los totales de verdad.
+- 💱 **Compra de divisas**: registra cuánto gastaste, cuánto se te acreditó y a
+  qué tipo de cambio, y deja los dólares en una cuenta lista para usar.
 - 📈 **Patrimonio en el tiempo**: la curva de tu patrimonio neto mes a mes.
 - 🔍 **Búsqueda global** por rango de fechas, no solo dentro de un mes.
 - 🤝 **Gastos compartidos**: pagás vos la cuenta de todos y anotás cuánto te

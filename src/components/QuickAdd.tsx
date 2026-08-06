@@ -4,9 +4,10 @@ import AmountKeypad from './AmountKeypad'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { createTransaction, createTransactions, fetchTopCategoryIds } from '../lib/api'
-import { rateFor, todayISO } from '../lib/format'
-import { buildInstallmentRows } from '../lib/statements'
-import type { Category } from '../types'
+import { formatMoney, rateFor, todayISO } from '../lib/format'
+import { splitShare } from '../lib/amounts'
+import { buildInstallmentRows, cardCurrencies, currencyLabel } from '../lib/statements'
+import type { Category, Currency } from '../types'
 
 const LAST_ACCOUNT_KEY = 'tracker:lastAccount'
 
@@ -28,7 +29,11 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
   const [selected, setSelected] = useState<Category | null>(null)
   const [amount, setAmount] = useState('')
   const [accountId, setAccountId] = useState<string>('')
+  /** null = la moneda de la cuenta. Solo se cambia en tarjetas. */
+  const [cardCurrency, setCardCurrency] = useState<Currency | null>(null)
   const [installments, setInstallments] = useState(1)
+  const [people, setPeople] = useState(1)
+  const [owedNote, setOwedNote] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -66,7 +71,10 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     setSelected(null)
     setAmount('')
     setShowAll(false)
+    setCardCurrency(null)
     setInstallments(1)
+    setPeople(1)
+    setOwedNote('')
   }
 
   function close() {
@@ -75,6 +83,20 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
   }
 
   const account = accounts.find((a) => a.id === accountId) ?? null
+  // Una tarjeta en pesos también tiene consumos en dólares; el resto de las
+  // cuentas siempre usan su propia moneda.
+  const currency: Currency =
+    account?.type === 'card'
+      ? (cardCurrency ?? account.currency)
+      : (account?.currency ?? 'ARS')
+
+  // Si se divide entre varias personas, tu parte es la que va a reportes;
+  // el resto queda como "te deben" en el movimiento.
+  const split = useMemo(() => {
+    const value = parseFloat(amount)
+    if (isNaN(value) || value <= 0 || people <= 1) return null
+    return splitShare(value, people)
+  }, [amount, people])
 
   async function save() {
     if (!user || !selected) return
@@ -82,7 +104,6 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     if (isNaN(value) || value <= 0) return
     setSaving(true)
     try {
-      const currency = account?.currency ?? 'ARS'
       const isCard = account?.type === 'card'
       const cuotas = isCard ? installments : 1
       const base = {
@@ -92,6 +113,14 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         ars_rate: rateFor(currency),
         description: null,
         type: 'expense' as const,
+        // Gasto compartido: se manda si se eligió dividir con alguien más
+        // (no aplica con cuotas, cada una ya es una parte del total).
+        ...(split && cuotas === 1
+          ? {
+              reimbursable_amount: split.owed,
+              reimbursable_note: owedNote.trim() || null,
+            }
+          : {}),
       }
       if (cuotas > 1) {
         const groupId = crypto.randomUUID()
@@ -185,7 +214,10 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
                     <button
                       key={a.id}
                       type="button"
-                      onClick={() => setAccountId(a.id)}
+                      onClick={() => {
+                        setAccountId(a.id)
+                        setCardCurrency(null) // vuelve a la moneda de la cuenta
+                      }}
                       className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition active:scale-95 ${
                         accountId === a.id
                           ? 'bg-brand text-white'
@@ -194,6 +226,28 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
                     >
                       <span>{a.icon}</span>
                       <span className="truncate">{a.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {account?.type === 'card' && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium text-slate-400">Moneda</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {cardCurrencies(account.currency).map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setCardCurrency(c)}
+                      className={`rounded-xl py-2 text-sm transition active:scale-95 ${
+                        currency === c
+                          ? 'bg-brand text-white'
+                          : 'bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {currencyLabel(c)}
                     </button>
                   ))}
                 </div>
@@ -226,6 +280,50 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
                       maximumFractionDigits: 2,
                     })}
                   </p>
+                )}
+              </div>
+            )}
+
+            {installments === 1 && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium text-slate-400">
+                  Dividir entre (incluyéndote)
+                </p>
+                <div className="grid grid-cols-5 gap-2">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setPeople(n)}
+                      className={`rounded-xl py-2 text-sm transition active:scale-95 ${
+                        people === n
+                          ? 'bg-brand text-white'
+                          : 'bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                {split && (
+                  <>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Tu parte{' '}
+                      <span className="font-semibold text-slate-200">
+                        {formatMoney(split.mine, currency)}
+                      </span>{' '}
+                      · te deben{' '}
+                      <span className="font-semibold text-emerald-400">
+                        {formatMoney(split.owed, currency)}
+                      </span>
+                    </p>
+                    <input
+                      className="input mt-2"
+                      value={owedNote}
+                      onChange={(e) => setOwedNote(e.target.value)}
+                      placeholder="¿Quiénes? Ej: Juan y Sofi"
+                    />
+                  </>
                 )}
               </div>
             )}

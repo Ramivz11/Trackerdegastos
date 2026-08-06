@@ -17,7 +17,7 @@ import {
   updateAccount,
 } from '../lib/api'
 import { formatDate, formatMoney, getUsdRate, rateFor, todayISO } from '../lib/format'
-import { openCycleTotal } from '../lib/statements'
+import { openCycleTotals, type CurrencyTotal } from '../lib/statements'
 import type { Account, AccountType, Currency, Transfer } from '../types'
 
 const ACCOUNT_ICONS = ['💵', '🏦', '💳', '🪙', '📱', '💰', '🐷', '🟠', '💜', '🔵', '🟢']
@@ -33,8 +33,9 @@ export default function Accounts() {
   const navigate = useNavigate()
 
   const [balances, setBalances] = useState<Record<string, number>>({})
-  // Deuda del ciclo abierto de cada tarjeta (lo que mostramos como su "saldo").
-  const [cardDebt, setCardDebt] = useState<Record<string, number>>({})
+  // Deuda del ciclo abierto de cada tarjeta (lo que mostramos como su "saldo"),
+  // separada por moneda: una tarjeta en pesos puede tener consumos en dólares.
+  const [cardDebt, setCardDebt] = useState<Record<string, CurrencyTotal[]>>({})
   const [transfers, setTransfers] = useState<Transfer[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -51,7 +52,7 @@ export default function Accounts() {
       const debts = await Promise.all(
         cards.map(async (c) => {
           const txs = await fetchTransactionsByAccount(c.id)
-          return [c.id, openCycleTotal(c, txs, today)] as const
+          return [c.id, openCycleTotals(c, txs, today)] as const
         }),
       )
       setCardDebt(Object.fromEntries(debts))
@@ -311,11 +312,22 @@ export default function Accounts() {
     }
   }
 
-  async function saveBuyCurrency() {
-    if (!user || !buyFromAcc || !buyToAcc) return
+  /**
+   * Resumen en vivo de la compra: cuánto sale, cuánto se acredita y a qué tipo
+   * de cambio. Sale de los dos montos tipeados, no de la cotización de Ajustes,
+   * así ves el TC real de la operación aunque hayas retocado los números.
+   */
+  const buySummary = useMemo(() => {
+    if (!buyFromAcc || !buyToAcc) return null
     const spent = parseFloat(buyAmount)
     const received = parseFloat(buyReceived)
-    if (isNaN(spent) || spent <= 0 || isNaN(received) || received <= 0) return
+    if (!(spent > 0) || !(received > 0)) return null
+    return { spent, received, rate: spent / received }
+  }, [buyAmount, buyReceived, buyFromAcc, buyToAcc])
+
+  async function saveBuyCurrency() {
+    if (!user || !buyFromAcc || !buyToAcc || !buySummary) return
+    const { spent, received, rate } = buySummary
     setSavingBuy(true)
     try {
       await buyCurrency(
@@ -328,7 +340,13 @@ export default function Accounts() {
           receivedAmount: received,
           categoryId: buyCategoryId || null,
           date: buyDate,
-          description: buyNote.trim() || null,
+          // Sin nota, la descripción deja el TC a la vista en el historial.
+          description:
+            buyNote.trim() ||
+            `Compra ${formatMoney(received, buyToAcc.currency)} a ${formatMoney(
+              rate,
+              buyFromAcc.currency,
+            )}`,
         },
         user.id,
       )
@@ -372,8 +390,9 @@ export default function Accounts() {
             ) : (
               accounts.map((a) => {
                 const isCard = a.type === 'card'
+                const debt = isCard ? (cardDebt[a.id] ?? []) : []
                 const bal = isCard
-                  ? (cardDebt[a.id] ?? 0)
+                  ? debt.reduce((s, d) => s + d.amount, 0)
                   : (balances[a.id] ?? a.initial_balance)
                 return (
                   <div key={a.id} className="card flex items-center gap-3">
@@ -411,7 +430,13 @@ export default function Accounts() {
                               : 'text-slate-100'
                         }`}
                       >
-                        {formatMoney(bal, a.currency)}
+                        {isCard
+                          ? debt.length === 0
+                            ? formatMoney(0, a.currency)
+                            : debt
+                                .map((d) => formatMoney(d.amount, d.currency))
+                                .join(' + ')
+                          : formatMoney(bal, a.currency)}
                         {isCard && (
                           <div className="text-[10px] font-normal text-slate-500">
                             ciclo actual
@@ -859,9 +884,34 @@ export default function Accounts() {
             />
           </div>
 
+          {buySummary && buyFromAcc && buyToAcc && (
+            <div className="rounded-xl bg-slate-800/60 p-3 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-400">Gastás</span>
+                <span className="font-semibold text-red-300">
+                  {formatMoney(buySummary.spent, buyFromAcc.currency)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-400">Se te acreditan</span>
+                <span className="font-semibold text-emerald-300">
+                  {formatMoney(buySummary.received, buyToAcc.currency)}
+                </span>
+              </div>
+              <div className="mt-1 border-t border-white/5 pt-1 text-xs text-slate-400">
+                Tipo de cambio: {formatMoney(buySummary.rate, buyFromAcc.currency)} por
+                cada {formatMoney(1, buyToAcc.currency)}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Los {buyToAcc.currency} quedan en {buyToAcc.icon} {buyToAcc.name} y podés
+                usarlos para pagar el resumen de una tarjeta.
+              </div>
+            </div>
+          )}
+
           <button
             onClick={saveBuyCurrency}
-            disabled={savingBuy || !buyAmount || !buyReceived || !buyToId}
+            disabled={savingBuy || !buySummary}
             className="btn-primary w-full disabled:opacity-50"
           >
             {savingBuy ? 'Guardando…' : 'Comprar'}

@@ -392,22 +392,111 @@ export async function fetchStatementPayments(
   return data as StatementPayment[]
 }
 
+/** Una línea del pago de un resumen tal como la arma la pantalla de tarjetas. */
+export interface StatementPaymentLine {
+  /** Cuenta de la que sale la plata; null = "solo marcar", no toca ningún saldo. */
+  paidFromAccountId: string | null
+  /** Lo que sale de esa cuenta, en su moneda. */
+  amount: number
+  currency: Currency
+  /** Cuánto cubre del resumen y en qué moneda del resumen. */
+  appliedAmount: number
+  appliedCurrency: Currency
+}
+
+/**
+ * Registra el pago de un resumen repartido entre varias cuentas y monedas.
+ *
+ * Cada línea con cuenta genera además un movimiento marcado como `is_transfer`:
+ * así el pago se ve en el historial de esa cuenta y le baja el saldo, pero no
+ * cuenta como gasto en reportes (los consumos de la tarjeta ya son el gasto).
+ */
 export async function createStatementPayment(
-  p: Pick<
-    StatementPayment,
-    'account_id' | 'cycle_close' | 'amount' | 'paid_from_account_id' | 'paid_date'
-  >,
+  params: {
+    card: Pick<Account, 'id' | 'name'>
+    cycleClose: string // YYYY-MM-DD
+    paidDate: string // YYYY-MM-DD
+    lines: StatementPaymentLine[]
+  },
   userId: string,
 ): Promise<void> {
-  const { error } = await supabase
-    .from('statement_payments')
-    .insert({ ...p, user_id: userId })
+  const { card, cycleClose, paidDate, lines } = params
+  const withAccount = lines.filter((l) => l.paidFromAccountId)
+
+  // Primero los movimientos, para poder guardar su id en cada línea del pago.
+  let txIds: string[] = []
+  if (withAccount.length > 0) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert(
+        withAccount.map((l) => ({
+          user_id: userId,
+          category_id: null,
+          account_id: l.paidFromAccountId,
+          amount: l.amount,
+          currency: l.currency,
+          ars_rate: rateFor(l.currency),
+          description: `Pago resumen ${card.name}`,
+          transaction_date: paidDate,
+          type: 'expense' as const,
+          is_transfer: true,
+        })),
+      )
+      .select('id')
+    if (error) throw error
+    txIds = (data as { id: string }[]).map((r) => r.id)
+  }
+
+  let next = 0
+  const rows = lines.map((l) => ({
+    user_id: userId,
+    account_id: card.id,
+    cycle_close: cycleClose,
+    amount: l.amount,
+    currency: l.currency,
+    applied_amount: l.appliedAmount,
+    applied_currency: l.appliedCurrency,
+    paid_from_account_id: l.paidFromAccountId,
+    transaction_id: l.paidFromAccountId ? (txIds[next++] ?? null) : null,
+    paid_date: paidDate,
+  }))
+
+  const { error } = await supabase.from('statement_payments').insert(rows)
   if (error) throw error
 }
 
-export async function deleteStatementPayment(id: string): Promise<void> {
-  const { error } = await supabase.from('statement_payments').delete().eq('id', id)
+/**
+ * Deshace el pago de un resumen: borra sus líneas y los movimientos que
+ * generaron, así los saldos vuelven a como estaban.
+ */
+export async function deleteStatementPaymentsForCycle(
+  cardId: string,
+  cycleClose: string,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('statement_payments')
+    .select('id, transaction_id')
+    .eq('account_id', cardId)
+    .eq('cycle_close', cycleClose)
   if (error) throw error
+
+  const rows = (data ?? []) as { id: string; transaction_id: string | null }[]
+  const txIds = rows.map((r) => r.transaction_id).filter((id): id is string => !!id)
+
+  const { error: delError } = await supabase
+    .from('statement_payments')
+    .delete()
+    .eq('account_id', cardId)
+    .eq('cycle_close', cycleClose)
+  if (delError) throw delError
+
+  if (txIds.length > 0) {
+    const { error: txError } = await supabase
+      .from('transactions')
+      .delete()
+      .in('id', txIds)
+    if (txError) throw txError
+  }
 }
 
 // ---------- Ajustes del usuario ----------
