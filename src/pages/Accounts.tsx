@@ -45,9 +45,11 @@ export default function Accounts() {
   const [cardDebt, setCardDebt] = useState<Record<string, CurrencyTotal[]>>({})
   const [transfers, setTransfers] = useState<Transfer[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
       const [bal, tr] = await Promise.all([fetchAccountBalances(), fetchTransfers()])
       setBalances(Object.fromEntries(bal.map((b) => [b.account_id, Number(b.balance)])))
@@ -63,6 +65,10 @@ export default function Accounts() {
         }),
       )
       setCardDebt(Object.fromEntries(debts))
+    } catch (e) {
+      // Si falla el RPC de saldos, cada cuenta cae a su saldo inicial y parece
+      // que los movimientos no se reflejan. Antes eso pasaba en silencio.
+      setLoadError(errorText(e))
     } finally {
       setLoading(false)
     }
@@ -422,6 +428,18 @@ export default function Accounts() {
           </div>
         )}
       </div>
+
+      {loadError && (
+        <div className="card mb-4 bg-red-500/10 text-sm text-red-300">
+          <p className="font-semibold">No se pudieron calcular los saldos.</p>
+          <p className="mt-1 break-words">{loadError}</p>
+          <p className="mt-2 text-xs text-red-300/80">
+            Mientras tanto cada cuenta muestra su saldo inicial, así que los
+            movimientos nuevos no se ven reflejados. Volvé a correr
+            <code className="mx-1">supabase/schema.sql</code>en el SQL Editor.
+          </p>
+        </div>
+      )}
 
       {loadingAccounts || loading ? (
         <p className="text-slate-400">Cargando…</p>
