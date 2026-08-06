@@ -16,7 +16,14 @@ import {
   fetchTransfers,
   updateAccount,
 } from '../lib/api'
-import { formatDate, formatMoney, getUsdRate, rateFor, todayISO } from '../lib/format'
+import {
+  errorText,
+  formatDate,
+  formatMoney,
+  getUsdRate,
+  rateFor,
+  todayISO,
+} from '../lib/format'
 import { openCycleTotals, type CurrencyTotal } from '../lib/statements'
 import type { Account, AccountType, Currency, Transfer } from '../types'
 
@@ -273,6 +280,7 @@ export default function Accounts() {
   const [buyDate, setBuyDate] = useState(todayISO())
   const [buyNote, setBuyNote] = useState('')
   const [savingBuy, setSavingBuy] = useState(false)
+  const [buyError, setBuyError] = useState<string | null>(null)
   // Nombre de la cuenta a crear cuando el destino es "+ Crear cuenta nueva".
   const [buyNewName, setBuyNewName] = useState('')
 
@@ -307,6 +315,7 @@ export default function Accounts() {
     setBuyCategoryId(defaultCat?.id ?? '')
     setBuyDate(todayISO())
     setBuyNote('')
+    setBuyError(null)
     setBuyOpen(true)
   }
 
@@ -344,6 +353,7 @@ export default function Accounts() {
     if (!user || !buyFromAcc || !buyToCurrency || !buySummary || !canBuy) return
     const { spent, received, rate } = buySummary
     setSavingBuy(true)
+    setBuyError(null)
     try {
       // Si todavía no tenías cuenta en la moneda que comprás, se crea ahora:
       // ahí quedan los dólares y desde ahí se puede pagar una tarjeta.
@@ -385,6 +395,9 @@ export default function Accounts() {
       setBuyOpen(false)
       await reloadAccounts()
       await load()
+    } catch (e) {
+      // Sin esto la compra fallaba en silencio: el botón parecía no hacer nada.
+      setBuyError(errorText(e))
     } finally {
       setSavingBuy(false)
     }
@@ -965,6 +978,12 @@ export default function Accounts() {
             </div>
           )}
 
+          {buyError && (
+            <p className="rounded-xl bg-red-500/10 p-3 text-sm text-red-300">
+              No se pudo guardar la compra: {buyError}
+            </p>
+          )}
+
           <button
             onClick={saveBuyCurrency}
             disabled={savingBuy || !canBuy}
@@ -972,6 +991,13 @@ export default function Accounts() {
           >
             {savingBuy ? 'Guardando…' : 'Comprar'}
           </button>
+          {!canBuy && (
+            <p className="text-center text-xs text-slate-500">
+              {!buySummary
+                ? 'Cargá cuánto gastás y cuánto recibís.'
+                : 'Poné un nombre para la cuenta nueva.'}
+            </p>
+          )}
         </div>
       </Modal>
     </div>

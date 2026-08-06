@@ -145,6 +145,25 @@ export function formatMoneyShort(amount: number): string {
   return `${sign}$${Math.round(abs)}`
 }
 
+/**
+ * Texto legible de un error para mostrarle al usuario. Los errores de Supabase
+ * traen `message` (y a veces `details`/`hint`), pero no son instancias de Error,
+ * así que no alcanza con `e instanceof Error`.
+ *
+ * También lo deja en la consola: en el celular no hay devtools a mano, pero
+ * desde la compu sirve para ver el detalle completo.
+ */
+export function errorText(e: unknown): string {
+  console.error(e)
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object') {
+    const err = e as { message?: string; details?: string; hint?: string }
+    const parts = [err.message, err.details, err.hint].filter(Boolean)
+    if (parts.length > 0) return parts.join(' · ')
+  }
+  return 'Algo falló y no llegó ningún detalle. Probá de nuevo.'
+}
+
 /** Fecha de hoy en formato YYYY-MM-DD respetando la zona horaria local. */
 export function todayISO(): string {
   const d = new Date()

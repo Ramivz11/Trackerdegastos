@@ -10,7 +10,7 @@ import {
   fetchTransactionsByAccount,
   type StatementPaymentLine,
 } from '../lib/api'
-import { formatMoney, rateFor, todayISO } from '../lib/format'
+import { errorText, formatMoney, rateFor, todayISO } from '../lib/format'
 import {
   buildStatements,
   formatShort,
@@ -107,6 +107,7 @@ export default function CardStatements() {
   const [lines, setLines] = useState<PayLine[]>([])
   const [payDate, setPayDate] = useState(todayISO())
   const [savingPay, setSavingPay] = useState(false)
+  const [payError, setPayError] = useState<string | null>(null)
 
   const payFromAccounts = useMemo(
     () => accounts.filter((a) => a.type !== 'card'),
@@ -139,6 +140,7 @@ export default function CardStatements() {
       }),
     )
     setPayDate(todayISO())
+    setPayError(null)
     setPayOpen(true)
   }
 
@@ -232,6 +234,7 @@ export default function CardStatements() {
   async function savePay() {
     if (!user || !card || !payTarget || !canConfirm) return
     setSavingPay(true)
+    setPayError(null)
     try {
       const payload: StatementPaymentLine[] = usableLines.map((l) => ({
         paidFromAccountId: l.accountId || null,
@@ -251,6 +254,9 @@ export default function CardStatements() {
       )
       setPayOpen(false)
       await load()
+    } catch (e) {
+      // Sin esto el pago fallaba en silencio: el botón parecía no hacer nada.
+      setPayError(errorText(e))
     } finally {
       setSavingPay(false)
     }
@@ -259,8 +265,12 @@ export default function CardStatements() {
   async function undoPay(st: Statement) {
     if (!card) return
     if (!confirm('¿Deshacer el pago de este resumen? Se borran sus movimientos.')) return
-    await deleteStatementPaymentsForCycle(card.id, st.closeISO)
-    await load()
+    try {
+      await deleteStatementPaymentsForCycle(card.id, st.closeISO)
+      await load()
+    } catch (e) {
+      alert(`No se pudo deshacer el pago: ${errorText(e)}`)
+    }
   }
 
   if (!card) {
@@ -632,6 +642,12 @@ export default function CardStatements() {
                 onChange={(e) => setPayDate(e.target.value)}
               />
             </div>
+
+            {payError && (
+              <p className="rounded-xl bg-red-500/10 p-3 text-sm text-red-300">
+                No se pudo guardar el pago: {payError}
+              </p>
+            )}
 
             <button
               onClick={savePay}
