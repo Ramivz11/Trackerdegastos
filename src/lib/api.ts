@@ -112,14 +112,44 @@ export async function createTransaction(
   if (error) throw error
 }
 
-/** Inserta varias transacciones de una (ej: las cuotas de una compra). */
+/**
+ * Valor con el que hay que rellenar cada columna NOT NULL de `transactions` que
+ * tiene default en la base. Es el mismo default, repetido acá: ver
+ * `createTransactions` para el porqué.
+ */
+const TX_NOT_NULL_DEFAULTS: Record<string, unknown> = {
+  currency: 'ARS',
+  ars_rate: 1,
+  type: 'expense',
+  is_transfer: false,
+  reimbursable_amount: 0,
+}
+
+/**
+ * Inserta varias transacciones de una (ej: las cuotas de una compra, o las dos
+ * patas de una compra de moneda).
+ *
+ * Ojo con las claves: PostgREST arma un solo INSERT con la unión de las claves
+ * de todas las filas, y a la fila que no trae una clave le manda NULL en vez de
+ * dejar que la columna tome su default. Si una fila trae `is_transfer` y la otra
+ * no, la otra explota con "null value in column is_transfer violates not-null
+ * constraint".
+ *
+ * Por eso se rellenan las columnas NOT NULL que alguna fila del lote menciona.
+ * Solo esas: mandar de más rompería en bases que todavía no corrieron el schema
+ * nuevo y no tienen la columna.
+ */
 export async function createTransactions(
   rows: NewTransaction[],
   userId: string,
 ): Promise<void> {
+  const used = new Set(rows.flatMap((r) => Object.keys(r)))
+  const defaults = Object.fromEntries(
+    Object.entries(TX_NOT_NULL_DEFAULTS).filter(([k]) => used.has(k)),
+  )
   const { error } = await supabase
     .from('transactions')
-    .insert(rows.map((r) => ({ ...r, user_id: userId })))
+    .insert(rows.map((r) => ({ ...defaults, ...r, user_id: userId })))
   if (error) throw error
 }
 
@@ -179,6 +209,9 @@ export async function buyCurrency(
       description: params.description,
       transaction_date: params.date,
       type: 'expense',
+      // Esta pata sí es un gasto real y cuenta en reportes, al revés que la de
+      // abajo. Va explícito porque las dos filas entran en el mismo INSERT.
+      is_transfer: false,
     },
     {
       category_id: null,
