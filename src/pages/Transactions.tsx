@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Modal from '../components/Modal'
 import QuickAdd from '../components/QuickAdd'
+import IconColorPicker from '../components/IconColorPicker'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import {
   createTransaction,
   createTransactions,
+  createCategory,
   deleteTransaction,
   fetchTransactionsByMonth,
   updateTransaction,
@@ -29,7 +31,14 @@ import {
 import type { Currency, TransactionType, TransactionWithCategory } from '../types'
 
 export default function Transactions() {
-  const { categories, categoriesById, accounts, accountsById, rules } = useData()
+  const {
+    categories,
+    categoriesById,
+    reloadCategories,
+    accounts,
+    accountsById,
+    rules,
+  } = useData()
   const { user } = useAuth()
   const [month, setMonth] = useState(currentMonth())
   const [items, setItems] = useState<TransactionWithCategory[]>([])
@@ -58,6 +67,12 @@ export default function Transactions() {
   const [scanning, setScanning] = useState(false)
   const [scanMsg, setScanMsg] = useState<string | null>(null)
   const [dupWarning, setDupWarning] = useState<string | null>(null)
+  const [categoryOpen, setCategoryOpen] = useState(false)
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryIcon, setNewCategoryIcon] = useState('💸')
+  const [newCategoryColor, setNewCategoryColor] = useState('#6366f1')
+  const [savingCategory, setSavingCategory] = useState(false)
+  const [categoryError, setCategoryError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -105,6 +120,43 @@ export default function Transactions() {
         : categories.filter((c) => c.kind !== 'income')
     if (!pool.some((c) => c.id === categoryId)) {
       setCategoryId(pool[0]?.id ?? '')
+    }
+  }
+
+  function openNewCategory() {
+    setNewCategoryName('')
+    setNewCategoryIcon(type === 'income' ? '💰' : '💸')
+    setNewCategoryColor(type === 'income' ? '#22c55e' : '#6366f1')
+    setCategoryError(null)
+    setCategoryOpen(true)
+  }
+
+  async function saveNewCategory() {
+    if (!user || !newCategoryName.trim()) return
+    const name = newCategoryName.trim()
+    const kind = type === 'income' ? 'income' : 'expense'
+    setSavingCategory(true)
+    setCategoryError(null)
+    try {
+      await createCategory(
+        {
+          name,
+          color: newCategoryColor,
+          icon: newCategoryIcon,
+          kind,
+          monthly_budget: null,
+          is_favorite: false,
+        },
+        user.id,
+      )
+      const refreshed = await reloadCategories()
+      const created = refreshed.find((c) => c.kind === kind && c.name === name)
+      if (created) setCategoryId(created.id)
+      setCategoryOpen(false)
+    } catch (e) {
+      setCategoryError((e as Error).message || 'No se pudo crear la categoría.')
+    } finally {
+      setSavingCategory(false)
     }
   }
 
@@ -570,7 +622,16 @@ export default function Transactions() {
           </div>
 
           <div>
-            <label className="label">Categoría</label>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="label mb-0">Categoría</label>
+              <button
+                type="button"
+                onClick={openNewCategory}
+                className="text-sm font-medium text-brand"
+              >
+                + Nueva categoría
+              </button>
+            </div>
             <select
               className="input"
               value={categoryId}
@@ -754,6 +815,47 @@ export default function Transactions() {
               {saving ? 'Guardando…' : 'Guardar'}
             </button>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={categoryOpen}
+        onClose={() => setCategoryOpen(false)}
+        title={type === 'income' ? 'Nueva categoría de ingreso' : 'Nueva categoría de gasto'}
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="label">Nombre</label>
+            <input
+              className="input"
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder={type === 'income' ? 'Ej: Sueldo' : 'Ej: Supermercado'}
+              autoFocus
+            />
+          </div>
+
+          <IconColorPicker
+            icon={newCategoryIcon}
+            color={newCategoryColor}
+            onIcon={setNewCategoryIcon}
+            onColor={setNewCategoryColor}
+          />
+
+          {categoryError && (
+            <p className="rounded-xl bg-red-500/15 p-3 text-sm text-red-400">
+              {categoryError}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={saveNewCategory}
+            disabled={savingCategory || !newCategoryName.trim()}
+            className="btn-primary w-full disabled:opacity-50"
+          >
+            {savingCategory ? 'Guardando…' : 'Crear y seleccionar'}
+          </button>
         </div>
       </Modal>
     </div>

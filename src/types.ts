@@ -146,6 +146,12 @@ export interface RecurringExpense {
   account_id: string | null
   name: string
   amount: number
+  /**
+   * Moneda del pago. Puede ser distinta a la de la cuenta: una suscripción en
+   * dólares que se paga con la tarjeta en pesos va en USD y entra al subtotal
+   * en dólares del resumen.
+   */
+  currency: Currency
   frequency: Frequency
   next_due_date: string // YYYY-MM-DD
   auto_post: boolean

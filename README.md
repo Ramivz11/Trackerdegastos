@@ -13,7 +13,9 @@ y se despliega en **Netlify**.
 - 🎯 **Presupuesto con arrastre**: techo de gasto global del mes y, por categoría,
   lo que sobra se suma al límite del mes siguiente.
 - 🔔 **Pagos y recurrentes**: recordatorios de vencimiento y gastos fijos que se
-  cargan solos al vencer (desde el servidor, aunque no abras la app).
+  cargan solos al vencer (desde el servidor, aunque no abras la app). Cada uno
+  tiene su moneda: una suscripción en dólares en la tarjeta en pesos entra al
+  subtotal en US$ del resumen.
 - 📲 **Notificaciones push** de vencimientos con la app cerrada.
 - 📷 **Foto del ticket**: sacás la foto y se precargan monto, comercio y fecha.
 - 🪄 **Reglas de auto-categorización**: “si la nota dice Uber → Transporte”.

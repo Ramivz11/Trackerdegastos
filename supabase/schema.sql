@@ -75,6 +75,9 @@ create table if not exists public.recurring_expenses (
   account_id uuid references public.accounts (id) on delete set null,
   name text not null,
   amount numeric(14, 2) not null check (amount >= 0),
+  -- Moneda del recurrente: puede ser distinta a la de la cuenta (una
+  -- suscripción en USD que se paga con la tarjeta en pesos).
+  currency text not null default 'ARS' check (currency in ('ARS', 'USD')),
   frequency text not null default 'monthly'
     check (frequency in ('once', 'weekly', 'monthly', 'yearly')),
   next_due_date date not null default current_date,
@@ -1079,3 +1082,101 @@ $$;
 --     );
 --     $$
 --   );
+
+-- =====================================================================
+-- v4 — Recurrentes con moneda propia (ej: una suscripción en dólares
+-- cargada a la tarjeta en pesos). Idempotente como todo lo anterior.
+-- =====================================================================
+
+-- Antes el recurrente heredaba la moneda de su cuenta, así que una suscripción
+-- en USD en una tarjeta en pesos se cargaba como pesos. Ahora la moneda es del
+-- recurrente: la cuenta solo dice de dónde sale la plata.
+alter table public.recurring_expenses
+  add column if not exists currency text not null default 'ARS';
+
+do $$
+begin
+  alter table public.recurring_expenses
+    add constraint recurring_expenses_currency_allowed
+    check (currency in ('ARS','USD','EUR','BRL','CLP','COP','MXN','UYU'));
+exception when duplicate_object then null;
+end;
+$$;
+
+-- Backfill: los recurrentes que ya existían usaban la moneda de su cuenta.
+update public.recurring_expenses r
+set currency = a.currency
+from public.accounts a
+where a.id = r.account_id
+  and a.currency <> 'ARS'
+  and r.currency = 'ARS';
+
+-- El auto-posteo tenía que generar la transacción en la moneda del recurrente,
+-- con la cotización congelada del día en que se generó (igual que una carga a
+-- mano). Antes insertaba sin moneda y todo caía en el default 'ARS'.
+create or replace function public.post_due_recurring(p_user_id uuid default null)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  r record;
+  due date;
+  posted integer;
+  total integer := 0;
+  rate numeric;
+begin
+  for r in
+    select * from public.recurring_expenses
+    where is_active and auto_post
+      and (p_user_id is null or user_id = p_user_id)
+  loop
+    due := r.next_due_date;
+    posted := 0;
+
+    -- Cotización de los ajustes del usuario (1 si es ARS o si no cargó ninguna).
+    if r.currency = 'ARS' then
+      rate := 1;
+    else
+      select coalesce((s.rates ->> r.currency)::numeric, 1) into rate
+      from public.user_settings s
+      where s.user_id = r.user_id;
+      rate := coalesce(rate, 1);
+    end if;
+
+    while due <= current_date loop
+      insert into public.transactions
+        (user_id, category_id, account_id, amount, currency, ars_rate,
+         description, transaction_date, type, recurring_id)
+      values
+        (r.user_id, r.category_id, r.account_id, r.amount, r.currency, rate,
+         r.name, due, 'expense', r.id)
+      on conflict do nothing;
+
+      posted := posted + 1;
+      exit when r.frequency = 'once';
+
+      due := (case r.frequency
+        when 'weekly' then due + interval '7 days'
+        when 'monthly' then due + interval '1 month'
+        when 'yearly' then due + interval '1 year'
+        else due + interval '1 month'
+      end)::date;
+    end loop;
+
+    if posted > 0 then
+      total := total + posted;
+      if r.frequency = 'once' then
+        update public.recurring_expenses set is_active = false where id = r.id;
+      else
+        update public.recurring_expenses set next_due_date = due where id = r.id;
+      end if;
+    end if;
+  end loop;
+
+  return total;
+end;
+$$;
+
+revoke all on function public.post_due_recurring(uuid) from public, anon, authenticated;

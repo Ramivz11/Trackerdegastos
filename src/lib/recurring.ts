@@ -1,6 +1,6 @@
 import { addDays, addMonths, addYears, parseISO, isAfter, isEqual } from 'date-fns'
 import { supabase } from './supabase'
-import { todayISO } from './format'
+import { rateFor, todayISO } from './format'
 import type { Frequency, RecurringExpense } from '../types'
 
 /** Calcula la siguiente fecha de vencimiento según la frecuencia. */
@@ -72,11 +72,14 @@ async function clientSideCatchUp(userId: string): Promise<number> {
 
     if (inserts.length === 0) continue
 
+    const currency = rule.currency ?? 'ARS'
     const rows = inserts.map((i) => ({
       user_id: userId,
       category_id: rule.category_id,
       account_id: rule.account_id,
       amount: rule.amount,
+      currency,
+      ars_rate: rateFor(currency),
       description: rule.name,
       transaction_date: i.date,
       type: 'expense' as const,

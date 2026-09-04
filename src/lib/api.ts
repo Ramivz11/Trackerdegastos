@@ -268,8 +268,10 @@ export async function createRecurring(
   r: Pick<
     RecurringExpense,
     | 'category_id'
+    | 'account_id'
     | 'name'
     | 'amount'
+    | 'currency'
     | 'frequency'
     | 'next_due_date'
     | 'auto_post'

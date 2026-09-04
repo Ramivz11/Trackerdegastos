@@ -12,8 +12,9 @@ import type {
  * Lógica de tarjetas de crédito: ciclos de facturación, cuotas y resúmenes.
  *
  * Un resumen (statement) junta los gastos de un ciclo. Con cierre el día D, el
- * resumen "que cierra el D del mes M" cubre desde el (D+1) del mes anterior hasta
- * el D del mes M inclusive. Cada resumen se identifica por su fecha de cierre.
+ * banco considera que ese día ya empezó el ciclo nuevo: el resumen "que cierra
+ * el D del mes M" cubre desde el D del mes anterior hasta el (D-1) del mes M.
+ * Cada resumen se identifica por su fecha de cierre.
  */
 
 /** Fecha (Date local) → 'YYYY-MM-DD' respetando la zona horaria local. */
@@ -40,7 +41,10 @@ export function addMonthsISO(dateISO: string, n: number): string {
  */
 export function cycleCloseFor(dateISO: string, closingDay: number): string {
   const d = parseISO(dateISO)
-  const monthIdx = d.getDate() > closingDay ? d.getMonth() + 1 : d.getMonth()
+  // El día informado como cierre pertenece al ciclo siguiente. Por ejemplo, si
+  // cierra el 27, tanto una compra del 27/07 como una del 03/08 van al resumen
+  // identificado por el cierre del 27/08.
+  const monthIdx = d.getDate() >= closingDay ? d.getMonth() + 1 : d.getMonth()
   return dateToISO(makeDate(d.getFullYear(), monthIdx, closingDay))
 }
 

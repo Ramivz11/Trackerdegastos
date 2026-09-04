@@ -10,8 +10,9 @@ import {
   updateRecurring,
 } from '../lib/api'
 import { nextDate } from '../lib/recurring'
+import { cardCurrencies, currencyLabel } from '../lib/statements'
 import { formatDate, formatMoney, rateFor, todayISO } from '../lib/format'
-import type { Frequency, RecurringExpense } from '../types'
+import type { Currency, Frequency, RecurringExpense } from '../types'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
 
 const FREQ_LABEL: Record<Frequency, string> = {
@@ -43,6 +44,9 @@ export default function Recurring() {
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [accountId, setAccountId] = useState('')
+  // Normalmente es la moneda de la cuenta; en tarjetas se puede cambiar, porque
+  // una tarjeta en pesos también tiene suscripciones en dólares.
+  const [currency, setCurrency] = useState<Currency>('ARS')
   const [frequency, setFrequency] = useState<Frequency>('monthly')
   const [dueDate, setDueDate] = useState(todayISO())
   const [autoPost, setAutoPost] = useState(false)
@@ -67,6 +71,7 @@ export default function Recurring() {
     setAmount('')
     setCategoryId(categories[0]?.id ?? '')
     setAccountId(accounts[0]?.id ?? '')
+    setCurrency(accounts[0]?.currency ?? 'ARS')
     setFrequency('monthly')
     setDueDate(todayISO())
     setAutoPost(false)
@@ -79,6 +84,11 @@ export default function Recurring() {
     setAmount(String(r.amount))
     setCategoryId(r.category_id ?? '')
     setAccountId(r.account_id ?? '')
+    // Los recurrentes cargados antes de tener moneda propia usaban la de su cuenta.
+    setCurrency(
+      r.currency ??
+        (r.account_id ? (accountsById[r.account_id]?.currency ?? 'ARS') : 'ARS'),
+    )
     setFrequency(r.frequency)
     setDueDate(r.next_due_date)
     setAutoPost(r.auto_post)
@@ -91,9 +101,14 @@ export default function Recurring() {
     if (isNaN(value) || value <= 0) return
     setSaving(true)
     try {
+      const acc = accountId ? accountsById[accountId] : null
+      // Solo las tarjetas admiten una moneda distinta a la de la cuenta.
+      const txCurrency: Currency =
+        acc?.type === 'card' ? currency : (acc?.currency ?? 'ARS')
       const payload = {
         name: name.trim(),
         amount: value,
+        currency: txCurrency,
         category_id: categoryId || null,
         account_id: accountId || null,
         frequency,
@@ -121,16 +136,18 @@ export default function Recurring() {
     if (!user || payingId) return
     setPayingId(r.id)
     try {
-      const currency = r.account_id
-        ? (accountsById[r.account_id]?.currency ?? 'ARS')
-        : 'ARS'
+      // La moneda es la del recurrente; si es de antes de tener una propia, la
+      // de su cuenta.
+      const paidCurrency: Currency =
+        r.currency ??
+        (r.account_id ? (accountsById[r.account_id]?.currency ?? 'ARS') : 'ARS')
       await createTransaction(
         {
           category_id: r.category_id,
           account_id: r.account_id,
           amount: r.amount,
-          currency,
-          ars_rate: rateFor(currency),
+          currency: paidCurrency,
+          ars_rate: rateFor(paidCurrency),
           description: r.name,
           transaction_date: todayISO(),
           type: 'expense',
@@ -140,7 +157,7 @@ export default function Recurring() {
       let message: string
       if (r.frequency === 'once') {
         await updateRecurring(r.id, { is_active: false })
-        message = `✓ ${r.name} pagado (${formatMoney(Number(r.amount))})`
+        message = `✓ ${r.name} pagado (${formatMoney(Number(r.amount), paidCurrency)})`
       } else {
         const next = nextDate(r.next_due_date, r.frequency)
         await updateRecurring(r.id, { next_due_date: next })
@@ -233,7 +250,7 @@ export default function Recurring() {
                     </div>
                   </div>
                   <div className="shrink-0 text-right font-bold text-slate-100">
-                    {formatMoney(Number(r.amount))}
+                    {formatMoney(Number(r.amount), r.currency ?? 'ARS')}
                   </div>
                 </div>
                 <div className="mt-3 flex gap-2">
@@ -310,7 +327,11 @@ export default function Recurring() {
               <select
                 className="input"
                 value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
+                onChange={(e) => {
+                  setAccountId(e.target.value)
+                  // La moneda vuelve a la de la cuenta elegida.
+                  setCurrency(accountsById[e.target.value]?.currency ?? 'ARS')
+                }}
               >
                 <option value="">Sin cuenta</option>
                 {accounts.map((a) => (
@@ -319,6 +340,35 @@ export default function Recurring() {
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Una tarjeta en pesos también tiene suscripciones en dólares. */}
+          {accountsById[accountId]?.type === 'card' && (
+            <div>
+              <label className="label">Moneda del pago</label>
+              <div className="grid grid-cols-2 gap-2">
+                {cardCurrencies(accountsById[accountId].currency).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setCurrency(c)}
+                    className={`btn py-2 text-sm ${
+                      currency === c
+                        ? 'bg-brand text-white'
+                        : 'bg-slate-700/60 text-slate-300'
+                    }`}
+                  >
+                    {currencyLabel(c)}
+                  </button>
+                ))}
+              </div>
+              {currency !== accountsById[accountId].currency && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Cada vencimiento va al subtotal en {currency} del resumen, que
+                  después podés pagar en esa moneda.
+                </p>
+              )}
             </div>
           )}
           <div>

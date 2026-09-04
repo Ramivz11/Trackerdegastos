@@ -27,6 +27,7 @@ interface RecurringRow {
   user_id: string
   name: string
   amount: number
+  currency: string | null
   next_due_date: string
 }
 
@@ -56,12 +57,17 @@ function whenLabel(days: number): string {
   return `vence en ${days} días`
 }
 
-function formatArs(amount: number): string {
-  return new Intl.NumberFormat('es-AR', {
-    style: 'currency',
-    currency: 'ARS',
-    maximumFractionDigits: 0,
-  }).format(amount)
+/** Formatea en la moneda del pago (una suscripción puede estar en dólares). */
+function formatAmount(amount: number, currency: string | null): string {
+  try {
+    return new Intl.NumberFormat('es-AR', {
+      style: 'currency',
+      currency: currency || 'ARS',
+      maximumFractionDigits: 0,
+    }).format(amount)
+  } catch {
+    return `$ ${Math.round(amount)}`
+  }
 }
 
 /** Días hasta el próximo día `dueDay` del mes (hoy o el mes que viene). */
@@ -104,14 +110,17 @@ Deno.serve(async () => {
 
   const { data: recurring } = await supabase
     .from('recurring_expenses')
-    .select('user_id, name, amount, next_due_date')
+    .select('user_id, name, amount, currency, next_due_date')
     .eq('is_active', true)
     .eq('auto_post', false)
     .lte('next_due_date', horizon)
 
   for (const r of (recurring ?? []) as RecurringRow[]) {
     const days = daysUntil(r.next_due_date, today)
-    push(r.user_id, `${r.name} (${formatArs(Number(r.amount))}) ${whenLabel(days)}`)
+    push(
+      r.user_id,
+      `${r.name} (${formatAmount(Number(r.amount), r.currency)}) ${whenLabel(days)}`,
+    )
   }
 
   const { data: cards } = await supabase

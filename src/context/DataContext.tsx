@@ -14,7 +14,7 @@ interface DataContextValue {
   categories: Category[]
   categoriesById: Record<string, Category>
   loadingCategories: boolean
-  reloadCategories: () => Promise<void>
+  reloadCategories: () => Promise<Category[]>
   accounts: Account[]
   accountsById: Record<string, Account>
   loadingAccounts: boolean
@@ -34,9 +34,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [rules, setRules] = useState<CategoryRule[]>([])
 
   const reloadCategories = useCallback(async () => {
-    if (!user) return
+    if (!user) return []
     try {
-      setCategories(await fetchCategories())
+      const next = await fetchCategories()
+      setCategories(next)
+      return next
     } finally {
       setLoadingCategories(false)
     }

@@ -447,7 +447,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div className="font-bold text-slate-100">
-                      {formatMoney(Number(r.amount))}
+                      {formatMoney(Number(r.amount), r.currency ?? 'ARS')}
                     </div>
                   </Link>
                 ))}
