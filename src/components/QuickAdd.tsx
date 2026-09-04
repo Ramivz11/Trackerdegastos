@@ -7,23 +7,24 @@ import { createTransaction, createTransactions, fetchTopCategoryIds } from '../l
 import { formatMoney, rateFor, todayISO } from '../lib/format'
 import { splitShare } from '../lib/amounts'
 import { buildInstallmentRows, cardCurrencies, currencyLabel } from '../lib/statements'
-import type { Category, Currency } from '../types'
+import type { Category, Currency, TransactionType } from '../types'
 
 const LAST_ACCOUNT_KEY = 'tracker:lastAccount'
 
 interface QuickAddProps {
-  /** Se llama tras registrar un gasto, para refrescar la pantalla actual. */
+  /** Se llama tras registrar un movimiento, para refrescar la pantalla actual. */
   onSaved?: () => void
 }
 
 /**
- * Botón flotante "Gasto rápido": muestra las categorías de gasto más usadas como
+ * Botón flotante "Movimiento rápido": muestra las categorías más usadas como
  * botones grandes; al elegir una, solo pide el monto y guarda con fecha de hoy.
  */
 export default function QuickAdd({ onSaved }: QuickAddProps) {
   const { user } = useAuth()
   const { categories, accounts } = useData()
   const [open, setOpen] = useState(false)
+  const [quickType, setQuickType] = useState<TransactionType>('expense')
   const [showAll, setShowAll] = useState(false)
   const [topIds, setTopIds] = useState<string[]>([])
   const [selected, setSelected] = useState<Category | null>(null)
@@ -38,9 +39,9 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
 
   useEffect(() => {
     if (open) {
-      fetchTopCategoryIds().then(setTopIds).catch(() => setTopIds([]))
+      fetchTopCategoryIds(quickType).then(setTopIds).catch(() => setTopIds([]))
     }
-  }, [open])
+  }, [open, quickType])
 
   // Cuenta por defecto: la última usada, o la primera disponible.
   useEffect(() => {
@@ -51,11 +52,13 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     }
   }, [accounts, accountId])
 
-  // Solo categorías de gasto, ordenadas: más usadas, luego favoritas, luego resto.
+  // Categorías del tipo elegido, ordenadas: más usadas, luego favoritas, luego resto.
   const ordered = useMemo(() => {
     const rank = new Map(topIds.map((id, i) => [id, i]))
     return categories
-      .filter((c) => c.kind !== 'income')
+      .filter((c) =>
+        quickType === 'income' ? c.kind === 'income' : c.kind !== 'income',
+      )
       .sort((a, b) => {
         const ra = rank.has(a.id) ? rank.get(a.id)! : 999
         const rb = rank.has(b.id) ? rank.get(b.id)! : 999
@@ -63,11 +66,12 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         if (a.is_favorite !== b.is_favorite) return a.is_favorite ? -1 : 1
         return a.name.localeCompare(b.name)
       })
-  }, [categories, topIds])
+  }, [categories, quickType, topIds])
 
   const shortcuts = showAll ? ordered : ordered.slice(0, 6)
 
   function reset() {
+    setQuickType('expense')
     setSelected(null)
     setAmount('')
     setShowAll(false)
@@ -75,6 +79,21 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     setInstallments(1)
     setPeople(1)
     setOwedNote('')
+  }
+
+  function changeQuickType(next: TransactionType) {
+    setQuickType(next)
+    setSelected(null)
+    setShowAll(false)
+    setAmount('')
+    setCardCurrency(null)
+    setInstallments(1)
+    setPeople(1)
+    setOwedNote('')
+    if (next === 'income') {
+      const receivingAccount = accounts.find((a) => a.type !== 'card')
+      setAccountId(receivingAccount?.id ?? '')
+    }
   }
 
   function close() {
@@ -93,10 +112,11 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
   // Si se divide entre varias personas, tu parte es la que va a reportes;
   // el resto queda como "te deben" en el movimiento.
   const split = useMemo(() => {
+    if (quickType === 'income') return null
     const value = parseFloat(amount)
     if (isNaN(value) || value <= 0 || people <= 1) return null
     return splitShare(value, people)
-  }, [amount, people])
+  }, [amount, people, quickType])
 
   async function save() {
     if (!user || !selected) return
@@ -104,7 +124,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     if (isNaN(value) || value <= 0) return
     setSaving(true)
     try {
-      const isCard = account?.type === 'card'
+      const isCard = quickType === 'expense' && account?.type === 'card'
       const cuotas = isCard ? installments : 1
       const base = {
         category_id: selected.id,
@@ -112,7 +132,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         currency,
         ars_rate: rateFor(currency),
         description: null,
-        type: 'expense' as const,
+        type: quickType,
         // Gasto compartido: se manda si se eligió dividir con alguien más
         // (no aplica con cuotas, cada una ya es una parte del total).
         ...(split && cuotas === 1
@@ -152,7 +172,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Registrar gasto rápido"
+        aria-label="Registrar movimiento rápido"
         className="fixed bottom-24 right-5 z-40 flex h-16 w-16 items-center justify-center rounded-full bg-brand text-3xl text-white shadow-xl shadow-brand/30 transition active:scale-90"
       >
         +
@@ -161,14 +181,44 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
       <Modal
         open={open}
         onClose={close}
-        title={selected ? `Gasto en ${selected.name}` : 'Gasto rápido'}
+        title={
+          selected
+            ? `${quickType === 'income' ? 'Ingreso' : 'Gasto'} en ${selected.name}`
+            : 'Movimiento rápido'
+        }
       >
         {!selected ? (
           <>
-            <p className="mb-3 text-sm text-slate-400">Elegí una categoría</p>
+            <div className="mb-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => changeQuickType('expense')}
+                className={`btn ${
+                  quickType === 'expense'
+                    ? 'bg-red-500/80 text-white'
+                    : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                Gasto
+              </button>
+              <button
+                type="button"
+                onClick={() => changeQuickType('income')}
+                className={`btn ${
+                  quickType === 'income'
+                    ? 'bg-emerald-500/80 text-white'
+                    : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                Ingreso
+              </button>
+            </div>
+            <p className="mb-3 text-sm text-slate-400">
+              Elegí una categoría de {quickType === 'income' ? 'ingreso' : 'gasto'}
+            </p>
             {shortcuts.length === 0 ? (
               <p className="text-sm text-slate-500">
-                No tenés categorías de gasto todavía.
+                No tenés categorías de {quickType === 'income' ? 'ingreso' : 'gasto'} todavía.
               </p>
             ) : (
             <div className="grid grid-cols-3 gap-3">
@@ -208,9 +258,13 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
 
             {accounts.length > 0 && (
               <div className="mt-4">
-                <p className="mb-2 text-xs font-medium text-slate-400">Pagué con</p>
+                <p className="mb-2 text-xs font-medium text-slate-400">
+                  {quickType === 'income' ? 'Recibir en' : 'Pagué con'}
+                </p>
                 <div className="grid grid-cols-2 gap-2">
-                  {accounts.map((a) => (
+                  {accounts
+                    .filter((a) => quickType === 'expense' || a.type !== 'card')
+                    .map((a) => (
                     <button
                       key={a.id}
                       type="button"
@@ -227,12 +281,12 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
                       <span>{a.icon}</span>
                       <span className="truncate">{a.name}</span>
                     </button>
-                  ))}
+                    ))}
                 </div>
               </div>
             )}
 
-            {account?.type === 'card' && (
+            {quickType === 'expense' && account?.type === 'card' && (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-medium text-slate-400">Moneda</p>
                 <div className="grid grid-cols-2 gap-2">
@@ -254,7 +308,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
               </div>
             )}
 
-            {account?.type === 'card' && (
+            {quickType === 'expense' && account?.type === 'card' && (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-medium text-slate-400">Cuotas</p>
                 <div className="grid grid-cols-6 gap-2">
@@ -284,7 +338,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
               </div>
             )}
 
-            {installments === 1 && (
+            {quickType === 'expense' && installments === 1 && (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-medium text-slate-400">
                   Dividir entre (incluyéndote)

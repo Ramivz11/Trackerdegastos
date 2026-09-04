@@ -16,6 +16,7 @@ import type {
   RecurringExpense,
   StatementPayment,
   Transaction,
+  TransactionType,
   TransactionWithCategory,
   Transfer,
   UserSettings,
@@ -232,7 +233,10 @@ export async function buyCurrency(
  * Devuelve los IDs de categorías ordenados por uso (más usados primero) en los
  * últimos N días. Sirve para los accesos directos de "gasto rápido".
  */
-export async function fetchTopCategoryIds(days = 60): Promise<string[]> {
+export async function fetchTopCategoryIds(
+  type: TransactionType = 'expense',
+  days = 60,
+): Promise<string[]> {
   const since = new Date()
   since.setDate(since.getDate() - days)
   const sinceISO = since.toISOString().slice(0, 10)
@@ -240,7 +244,7 @@ export async function fetchTopCategoryIds(days = 60): Promise<string[]> {
   const { data, error } = await supabase
     .from('transactions')
     .select('category_id')
-    .eq('type', 'expense')
+    .eq('type', type)
     .gte('transaction_date', sinceISO)
   if (error || !data) return []
 

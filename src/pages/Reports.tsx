@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -16,7 +16,9 @@ import { netArs } from '../lib/amounts'
 import { fetchTransactionsRange } from '../lib/api'
 import {
   currentMonth,
+  formatDate,
   formatMoney,
+  formatMonth,
   monthOf,
   monthRange,
   shiftMonth,
@@ -26,18 +28,21 @@ import { format, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { TransactionWithCategory } from '../types'
 
-function lastMonths(n: number): string[] {
+function lastMonths(n: number, endMonth: string): string[] {
   const out: string[] = []
-  const current = currentMonth()
-  for (let i = n - 1; i >= 0; i--) out.push(shiftMonth(current, -i))
+  for (let i = n - 1; i >= 0; i--) out.push(shiftMonth(endMonth, -i))
   return out
 }
 
 export default function Reports() {
-  const { categories, categoriesById } = useData()
+  const { categories, categoriesById, accounts, accountsById } = useData()
   const [txs, setTxs] = useState<TransactionWithCategory[]>([])
   const [loading, setLoading] = useState(true)
-  const months = useMemo(() => lastMonths(6), [])
+  const [selectedMonth, setSelectedMonth] = useState(currentMonth())
+  const [filterType, setFilterType] = useState<'all' | 'expense' | 'income'>('all')
+  const [filterCategory, setFilterCategory] = useState('all')
+  const [filterAccount, setFilterAccount] = useState('all')
+  const months = useMemo(() => lastMonths(6, selectedMonth), [selectedMonth])
 
   // Una sola consulta por rango en lugar de una por mes.
   useEffect(() => {
@@ -65,15 +70,28 @@ export default function Reports() {
     return map
   }, [txs, months])
 
-  const current = currentMonth()
-  const currentTxs = monthsData[current] ?? []
+  const matchesFilters = useCallback(
+    (t: TransactionWithCategory) => {
+      if (t.is_transfer) return false
+      if (filterType !== 'all' && t.type !== filterType) return false
+      if (filterCategory !== 'all' && t.category_id !== filterCategory) return false
+      if (filterAccount !== 'all' && t.account_id !== filterAccount) return false
+      return true
+    },
+    [filterAccount, filterCategory, filterType],
+  )
 
-  // Agrupa por categoría las transacciones del tipo pedido (mes actual).
+  const selectedTxs = useMemo(
+    () => (monthsData[selectedMonth] ?? []).filter(matchesFilters),
+    [matchesFilters, monthsData, selectedMonth],
+  )
+
+  // Agrupa por categoría las transacciones del tipo pedido en el mes filtrado.
   // De los gastos compartidos cuenta solo tu parte.
   function byCategory(type: 'expense' | 'income') {
     const map = new Map<string, number>()
-    for (const t of currentTxs) {
-      if (t.is_transfer || t.type !== type || !t.category_id) continue
+    for (const t of selectedTxs) {
+      if (t.type !== type || !t.category_id) continue
       const ars =
         type === 'expense' ? netArs(t) : toArs(Number(t.amount), t.currency, t.ars_rate)
       map.set(t.category_id, (map.get(t.category_id) ?? 0) + ars)
@@ -87,19 +105,21 @@ export default function Reports() {
       .sort((a, b) => b.value - a.value)
   }
 
-  // Torta: gasto por categoría del mes actual.
-  const pieData = useMemo(() => byCategory('expense'), [currentTxs, categoriesById])
+  const pieData = useMemo(
+    () => byCategory('expense'),
+    [selectedTxs, categoriesById],
+  )
 
   // Torta: ingreso por categoría del mes actual.
   const incomePieData = useMemo(
     () => byCategory('income'),
-    [currentTxs, categoriesById],
+    [selectedTxs, categoriesById],
   )
 
   // Barras: gasto e ingreso por mes (últimos 6 meses).
   const barData = useMemo(() => {
     return months.map((m) => {
-      const txs = monthsData[m] ?? []
+      const txs = (monthsData[m] ?? []).filter(matchesFilters)
       let gasto = 0
       let ingreso = 0
       for (const t of txs) {
@@ -113,13 +133,13 @@ export default function Reports() {
         ingreso,
       }
     })
-  }, [months, monthsData])
+  }, [matchesFilters, months, monthsData])
 
-  // Presupuesto vs real (mes actual).
+  // Presupuesto vs real para el mes y los filtros elegidos.
   const budgetData = useMemo(() => {
     const spentByCat = new Map<string, number>()
-    for (const t of currentTxs) {
-      if (t.is_transfer || t.type !== 'expense' || !t.category_id) continue
+    for (const t of selectedTxs) {
+      if (t.type !== 'expense' || !t.category_id) continue
       spentByCat.set(t.category_id, (spentByCat.get(t.category_id) ?? 0) + netArs(t))
     }
     return categories
@@ -129,7 +149,24 @@ export default function Reports() {
         used: spentByCat.get(c.id) ?? 0,
         budget: c.monthly_budget!,
       }))
-  }, [categories, currentTxs])
+  }, [categories, selectedTxs])
+
+  const paymentData = useMemo(() => {
+    const byAccount = new Map<string, number>()
+    for (const t of selectedTxs) {
+      if (t.type !== 'expense') continue
+      const id = t.account_id ?? 'sin-cuenta'
+      byAccount.set(id, (byAccount.get(id) ?? 0) + netArs(t))
+    }
+    return [...byAccount.entries()]
+      .map(([id, value]) => ({
+        id,
+        name: id === 'sin-cuenta' ? 'Sin medio de pago' : accountsById[id]?.name ?? 'Cuenta eliminada',
+        icon: id === 'sin-cuenta' ? '❔' : accountsById[id]?.icon ?? '❔',
+        value,
+      }))
+      .sort((a, b) => b.value - a.value)
+  }, [accountsById, selectedTxs])
 
   const totalSpent = pieData.reduce((s, d) => s + d.value, 0)
   const totalIncome = incomePieData.reduce((s, d) => s + d.value, 0)
@@ -162,6 +199,75 @@ export default function Reports() {
         </Link>
       </div>
 
+      <section className="card mb-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectedMonth((m) => shiftMonth(m, -1))}
+            className="btn bg-slate-800 px-3"
+            aria-label="Mes anterior"
+          >
+            ‹
+          </button>
+          <input
+            type="month"
+            className="input min-w-0 flex-1 text-center font-semibold"
+            value={selectedMonth}
+            onChange={(e) => e.target.value && setSelectedMonth(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => setSelectedMonth((m) => shiftMonth(m, 1))}
+            disabled={selectedMonth >= currentMonth()}
+            className="btn bg-slate-800 px-3 disabled:opacity-30"
+            aria-label="Mes siguiente"
+          >
+            ›
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <select
+            className="input"
+            value={filterType}
+            onChange={(e) =>
+              setFilterType(e.target.value as 'all' | 'expense' | 'income')
+            }
+            aria-label="Tipo de movimiento"
+          >
+            <option value="all">Gastos e ingresos</option>
+            <option value="expense">Solo gastos</option>
+            <option value="income">Solo ingresos</option>
+          </select>
+          <select
+            className="input"
+            value={filterCategory}
+            onChange={(e) => setFilterCategory(e.target.value)}
+            aria-label="Categoría"
+          >
+            <option value="all">Todas las categorías</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.icon} {c.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="input"
+            value={filterAccount}
+            onChange={(e) => setFilterAccount(e.target.value)}
+            aria-label="Medio de pago"
+          >
+            <option value="all">Todos los medios de pago</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.icon} {a.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
+
       {loading ? (
         <p className="text-slate-400">Cargando…</p>
       ) : (
@@ -169,11 +275,11 @@ export default function Reports() {
           {/* Torta por categoría */}
           <section className="card">
             <h2 className="mb-2 font-semibold text-slate-200">
-              Gasto por categoría (este mes)
+              Gasto por categoría · {formatMonth(selectedMonth)}
             </h2>
             {pieData.length === 0 ? (
               <p className="py-6 text-center text-sm text-slate-500">
-                Sin gastos este mes.
+                Sin gastos para estos filtros.
               </p>
             ) : (
               <>
@@ -234,11 +340,11 @@ export default function Reports() {
           {/* Torta de ingresos por categoría */}
           <section className="card">
             <h2 className="mb-2 font-semibold text-slate-200">
-              Ingreso por categoría (este mes)
+              Ingreso por categoría · {formatMonth(selectedMonth)}
             </h2>
             {incomePieData.length === 0 ? (
               <p className="py-6 text-center text-sm text-slate-500">
-                Sin ingresos este mes.
+                Sin ingresos para estos filtros.
               </p>
             ) : (
               <>
@@ -302,6 +408,83 @@ export default function Reports() {
             )}
           </section>
 
+          {/* Cuánto se pagó con cada cuenta o tarjeta. */}
+          <section className="card">
+            <h2 className="mb-3 font-semibold text-slate-200">
+              Gastos por medio de pago
+            </h2>
+            {paymentData.length === 0 ? (
+              <p className="py-4 text-center text-sm text-slate-500">
+                Sin gastos para estos filtros.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {paymentData.map((row) => (
+                  <div
+                    key={row.id}
+                    className="flex items-center justify-between rounded-xl bg-slate-800/70 px-3 py-2"
+                  >
+                    <span className="text-sm text-slate-200">
+                      {row.icon} {row.name}
+                    </span>
+                    <span className="text-sm font-semibold text-slate-100">
+                      {formatMoney(row.value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Detalle auditable del mes: qué fue y con qué se pagó o cobró. */}
+          <section className="card">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="font-semibold text-slate-200">Detalle del mes</h2>
+              <span className="text-xs text-slate-500">
+                {selectedTxs.length} movimientos
+              </span>
+            </div>
+            {selectedTxs.length === 0 ? (
+              <p className="py-4 text-center text-sm text-slate-500">
+                No hay movimientos para mostrar.
+              </p>
+            ) : (
+              <div className="divide-y divide-white/5">
+                {selectedTxs.map((t) => {
+                  const cat = t.category_id ? categoriesById[t.category_id] : null
+                  const account = t.account_id ? accountsById[t.account_id] : null
+                  return (
+                    <div key={t.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+                      <span
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg"
+                        style={{ backgroundColor: (cat?.color ?? '#64748b') + '33' }}
+                      >
+                        {cat?.icon ?? '❔'}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-slate-100">
+                          {t.description || cat?.name || 'Sin categoría'}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {formatDate(t.transaction_date)} · {cat?.name ?? 'Sin categoría'} ·{' '}
+                          {account ? `${account.icon} ${account.name}` : 'Sin cuenta'}
+                        </p>
+                      </div>
+                      <span
+                        className={`shrink-0 text-sm font-semibold ${
+                          t.type === 'income' ? 'text-emerald-400' : 'text-slate-100'
+                        }`}
+                      >
+                        {t.type === 'income' ? '+' : '−'}
+                        {formatMoney(Number(t.amount), t.currency)}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+
           {/* Barras mes a mes: gasto vs ingreso */}
           <section className="card">
             <h2 className="mb-2 font-semibold text-slate-200">
@@ -344,7 +527,7 @@ export default function Reports() {
           {budgetData.length > 0 && (
             <section className="card">
               <h2 className="mb-3 font-semibold text-slate-200">
-                Presupuesto vs real (este mes)
+                Presupuesto vs real · {formatMonth(selectedMonth)}
               </h2>
               <div className="space-y-3">
                 {budgetData.map(({ cat, used, budget }) => {
