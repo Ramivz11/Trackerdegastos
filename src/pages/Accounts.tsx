@@ -168,6 +168,9 @@ export default function Accounts() {
                 description: 'Ajuste de saldo',
                 transaction_date: todayISO(),
                 type: diff > 0 ? 'income' : 'expense',
+                // Corrige el saldo, no es plata que entró o salió: no cuenta
+                // como ingreso ni gasto en reportes.
+                is_transfer: true,
               },
               user.id,
             )

@@ -1180,3 +1180,14 @@ end;
 $$;
 
 revoke all on function public.post_due_recurring(uuid) from public, anon, authenticated;
+
+-- =====================================================================
+-- v5 — Los ajustes de saldo no son gasto ni ingreso. Antes se guardaban como
+-- movimientos comunes e inflaban los reportes; ahora se marcan como
+-- transferencia (siguen moviendo el saldo). Idempotente.
+-- =====================================================================
+update public.transactions
+set is_transfer = true
+where description = 'Ajuste de saldo'
+  and category_id is null
+  and is_transfer = false;
