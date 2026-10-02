@@ -41,6 +41,7 @@ export function transactionsToCsv(
     'Equivalente ARS',
     'Cuota',
     'Compartido con',
+    'Transferencia',
   ]
 
   const num = (n: number) => n.toFixed(2).replace('.', ',')
@@ -69,6 +70,9 @@ export function transactionsToCsv(
       num(esGasto ? netArs(t) : toArs(Number(t.amount), t.currency, t.ars_rate)),
       cuota,
       t.reimbursable_note ?? '',
+      // Pagos de resumen, ajustes de saldo, etc.: mueven saldo pero no son
+      // gasto ni ingreso, y los reportes no los suman.
+      t.is_transfer ? 'Sí' : 'No',
     ]
       .map(csvCell)
       .join(';')

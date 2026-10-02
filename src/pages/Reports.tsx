@@ -4,11 +4,14 @@ import {
   BarChart,
   Cell,
   Legend,
+  Line,
+  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
+  YAxis,
 } from 'recharts'
 import { Link } from 'react-router-dom'
 import { useData } from '../context/DataContext'
@@ -18,11 +21,13 @@ import {
   currentMonth,
   formatDate,
   formatMoney,
+  formatMoneyShort,
   formatMonth,
   monthOf,
   monthRange,
   shiftMonth,
   toArs,
+  todayISO,
 } from '../lib/format'
 import { format, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -34,6 +39,18 @@ function lastMonths(n: number, endMonth: string): string[] {
   return out
 }
 
+const TOOLTIP_STYLE = {
+  background: '#1e293b',
+  border: 'none',
+  borderRadius: 12,
+  color: '#fff',
+}
+
+const WEEKDAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+
+/** Cuántas categorías se ven antes de "Ver todas". */
+const TOP_CATEGORIES = 8
+
 export default function Reports() {
   const { categories, categoriesById, accounts, accountsById } = useData()
   const [txs, setTxs] = useState<TransactionWithCategory[]>([])
@@ -42,6 +59,9 @@ export default function Reports() {
   const [filterType, setFilterType] = useState<'all' | 'expense' | 'income'>('all')
   const [filterCategory, setFilterCategory] = useState('all')
   const [filterAccount, setFilterAccount] = useState('all')
+  const [showAllCats, setShowAllCats] = useState(false)
+  /** Categoría del gráfico de evolución; null = la de mayor gasto del mes. */
+  const [trendCatId, setTrendCatId] = useState<string | null>(null)
   const months = useMemo(() => lastMonths(6, selectedMonth), [selectedMonth])
 
   // Una sola consulta por rango en lugar de una por mes.
@@ -98,7 +118,9 @@ export default function Reports() {
     }
     return [...map.entries()]
       .map(([id, value]) => ({
+        id,
         name: categoriesById[id]?.name ?? 'Otros',
+        icon: categoriesById[id]?.icon ?? '❔',
         value,
         color: categoriesById[id]?.color ?? '#64748b',
       }))
@@ -167,6 +189,75 @@ export default function Reports() {
       }))
       .sort((a, b) => b.value - a.value)
   }, [accountsById, selectedTxs])
+
+  // Gastos del mes que pasan los filtros (excluye transferencias).
+  const isExpense = useCallback(
+    (t: TransactionWithCategory) => t.type === 'expense' && matchesFilters(t),
+    [matchesFilters],
+  )
+
+  // Ritmo del mes: gasto acumulado día a día contra el mes anterior.
+  const prevMonth = shiftMonth(selectedMonth, -1)
+  const pace = useMemo(() => {
+    const daily = (m: string) => {
+      const arr = new Array<number>(32).fill(0)
+      for (const t of monthsData[m] ?? []) {
+        if (isExpense(t)) arr[Number(t.transaction_date.slice(8, 10))] += netArs(t)
+      }
+      return arr
+    }
+    const cur = daily(selectedMonth)
+    const prev = daily(prevMonth)
+    const daysCur = Number(monthRange(selectedMonth).end.slice(8))
+    const daysPrev = Number(monthRange(prevMonth).end.slice(8))
+    // En el mes en curso la línea se corta hoy; los días que faltan no son $0.
+    const lastDay =
+      selectedMonth === currentMonth() ? Number(todayISO().slice(8)) : daysCur
+    const rows: { day: number; actual: number | null; anterior: number | null }[] = []
+    let a = 0
+    let b = 0
+    let actualAtLast = 0
+    let prevAtLast = 0
+    for (let d = 1; d <= Math.max(daysCur, daysPrev); d++) {
+      a += cur[d]
+      b += prev[d]
+      if (d === Math.min(lastDay, daysCur)) actualAtLast = a
+      if (d === Math.min(lastDay, daysPrev)) prevAtLast = b
+      rows.push({
+        day: d,
+        actual: d <= Math.min(lastDay, daysCur) ? a : null,
+        anterior: d <= daysPrev ? b : null,
+      })
+    }
+    return { rows, lastDay: Math.min(lastDay, daysCur), diff: actualAtLast - prevAtLast }
+  }, [isExpense, monthsData, prevMonth, selectedMonth])
+
+  // Evolución de una categoría en los últimos 6 meses.
+  const trendCat =
+    categoriesById[trendCatId ?? ''] ?? (pieData[0] ? categoriesById[pieData[0].id] : null)
+  const trendData = useMemo(() => {
+    if (!trendCat) return []
+    return months.map((m) => {
+      let gasto = 0
+      for (const t of monthsData[m] ?? []) {
+        if (t.category_id === trendCat.id && isExpense(t)) gasto += netArs(t)
+      }
+      return { month: format(parseISO(m + '-01'), 'MMM', { locale: es }), gasto }
+    })
+  }, [isExpense, months, monthsData, trendCat])
+
+  // Gasto por día de la semana del mes elegido.
+  const weekdayData = useMemo(() => {
+    const rows = WEEKDAYS.map((name) => ({ name, gasto: 0, count: 0 }))
+    for (const t of selectedTxs) {
+      if (t.type !== 'expense') continue
+      // getDay(): 0 = domingo; lo corremos para que la semana arranque el lunes.
+      const i = (parseISO(t.transaction_date).getDay() + 6) % 7
+      rows[i].gasto += netArs(t)
+      rows[i].count += 1
+    }
+    return rows
+  }, [selectedTxs])
 
   const totalSpent = pieData.reduce((s, d) => s + d.value, 0)
   const totalIncome = incomePieData.reduce((s, d) => s + d.value, 0)
@@ -272,9 +363,92 @@ export default function Reports() {
         <p className="text-slate-400">Cargando…</p>
       ) : (
         <div className="space-y-6">
-          {/* Torta por categoría */}
+          {/* Ritmo del mes: acumulado vs mes anterior */}
           <section className="card">
-            <h2 className="mb-2 font-semibold text-slate-200">
+            <h2 className="font-semibold text-slate-200">
+              Ritmo de gasto · {formatMonth(selectedMonth)}
+            </h2>
+            {totalSpent === 0 && pace.rows.every((r) => !r.anterior) ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                Sin gastos para estos filtros.
+              </p>
+            ) : (
+              <>
+                <p className="mb-2 text-sm text-slate-400">
+                  {Math.round(pace.diff) === 0 ? (
+                    <>Al día {pace.lastDay} vas igual que {formatMonth(prevMonth)}</>
+                  ) : (
+                    <>
+                      Al día {pace.lastDay} vas{' '}
+                      <span className="font-semibold text-slate-100">
+                        {formatMoney(Math.abs(pace.diff))}
+                      </span>{' '}
+                      {pace.diff > 0 ? 'arriba ▲' : 'abajo ▼'} de {formatMonth(prevMonth)}
+                    </>
+                  )}
+                </p>
+                <div className="h-48">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={pace.rows}>
+                      <XAxis
+                        dataKey="day"
+                        stroke="#94a3b8"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        ticks={[1, 8, 15, 22, 29]}
+                      />
+                      <YAxis
+                        stroke="#94a3b8"
+                        fontSize={11}
+                        tickLine={false}
+                        axisLine={false}
+                        width={44}
+                        tickFormatter={(v: number) => formatMoneyShort(v)}
+                      />
+                      <Tooltip
+                        labelFormatter={(d) => `Día ${d}`}
+                        formatter={(v: number, name: string) => [
+                          formatMoney(v),
+                          name === 'actual'
+                            ? formatMonth(selectedMonth)
+                            : formatMonth(prevMonth),
+                        ]}
+                        contentStyle={TOOLTIP_STYLE}
+                      />
+                      <Legend
+                        formatter={(value) =>
+                          value === 'actual'
+                            ? formatMonth(selectedMonth)
+                            : formatMonth(prevMonth)
+                        }
+                        wrapperStyle={{ fontSize: 12 }}
+                      />
+                      <Line
+                        dataKey="anterior"
+                        stroke="#64748b"
+                        strokeWidth={2}
+                        strokeDasharray="4 4"
+                        dot={false}
+                        connectNulls={false}
+                      />
+                      <Line
+                        dataKey="actual"
+                        stroke="#6366f1"
+                        strokeWidth={2}
+                        dot={false}
+                        connectNulls={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* Gasto por categoría: barras ordenadas (tocar una abre su evolución) */}
+          <section className="card">
+            <h2 className="mb-1 font-semibold text-slate-200">
               Gasto por categoría · {formatMonth(selectedMonth)}
             </h2>
             {pieData.length === 0 ? (
@@ -283,59 +457,113 @@ export default function Reports() {
               </p>
             ) : (
               <>
-                <div className="h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={pieData}
-                        dataKey="value"
-                        nameKey="name"
-                        innerRadius={55}
-                        outerRadius={85}
-                        paddingAngle={2}
-                      >
-                        {pieData.map((d, i) => (
-                          <Cell key={i} fill={d.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        formatter={(v: number) => formatMoney(v)}
-                        contentStyle={{
-                          background: '#1e293b',
-                          border: 'none',
-                          borderRadius: 12,
-                          color: '#fff',
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="mt-2 space-y-1">
-                  {pieData.map((d) => (
-                    <div
-                      key={d.name}
-                      className="flex items-center justify-between text-sm"
+                <p className="mb-3 text-xs text-slate-500">
+                  Total {formatMoney(totalSpent)} · tocá una para ver su evolución
+                </p>
+                <div className="space-y-2.5">
+                  {(showAllCats ? pieData : pieData.slice(0, TOP_CATEGORIES)).map((d) => (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => setTrendCatId(d.id)}
+                      className={`block w-full rounded-lg px-1 py-0.5 text-left transition ${
+                        trendCat?.id === d.id ? 'bg-white/5' : ''
+                      }`}
                     >
-                      <span className="flex items-center gap-2 text-slate-300">
-                        <span
-                          className="inline-block h-3 w-3 rounded-full"
-                          style={{ backgroundColor: d.color }}
+                      <div className="mb-1 flex justify-between gap-2 text-sm">
+                        <span className="truncate text-slate-200">
+                          {d.icon} {d.name}
+                        </span>
+                        <span className="shrink-0 text-slate-400">
+                          {formatMoney(d.value)} ·{' '}
+                          {Math.round((d.value / totalSpent) * 100)}%
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-700/60">
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            width: `${Math.max((d.value / pieData[0].value) * 100, 1)}%`,
+                            backgroundColor: d.color,
+                          }}
                         />
-                        {d.name}
-                      </span>
-                      <span className="text-slate-400">
-                        {formatMoney(d.value)} ·{' '}
-                        {totalSpent > 0
-                          ? Math.round((d.value / totalSpent) * 100)
-                          : 0}
-                        %
-                      </span>
-                    </div>
+                      </div>
+                    </button>
                   ))}
                 </div>
+                {pieData.length > TOP_CATEGORIES && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllCats((v) => !v)}
+                    className="mt-3 w-full text-sm font-medium text-brand"
+                  >
+                    {showAllCats
+                      ? 'Ver menos'
+                      : `Ver todas (${pieData.length - TOP_CATEGORIES} más)`}
+                  </button>
+                )}
               </>
             )}
           </section>
+
+          {/* Evolución de la categoría elegida */}
+          {trendCat && (
+            <section className="card">
+              <h2 className="mb-2 font-semibold text-slate-200">
+                {trendCat.icon} {trendCat.name} · últimos 6 meses
+              </h2>
+              <div className="h-44">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={trendData}>
+                    <XAxis
+                      dataKey="month"
+                      stroke="#94a3b8"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      cursor={{ fill: '#ffffff11' }}
+                      formatter={(v: number) => [formatMoney(v), 'Gasto']}
+                      contentStyle={TOOLTIP_STYLE}
+                    />
+                    <Bar dataKey="gasto" fill={trendCat.color} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+          )}
+
+          {/* Gasto por día de la semana */}
+          {totalSpent > 0 && (
+            <section className="card">
+              <h2 className="mb-2 font-semibold text-slate-200">
+                Por día de la semana · {formatMonth(selectedMonth)}
+              </h2>
+              <div className="h-44">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={weekdayData}>
+                    <XAxis
+                      dataKey="name"
+                      stroke="#94a3b8"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      cursor={{ fill: '#ffffff11' }}
+                      formatter={(v: number, _n, item) => [
+                        `${formatMoney(v)} · ${item.payload.count} mov.`,
+                        'Gasto',
+                      ]}
+                      contentStyle={TOOLTIP_STYLE}
+                    />
+                    <Bar dataKey="gasto" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+          )}
 
           {/* Torta de ingresos por categoría */}
           <section className="card">
@@ -365,12 +593,7 @@ export default function Reports() {
                       </Pie>
                       <Tooltip
                         formatter={(v: number) => formatMoney(v)}
-                        contentStyle={{
-                          background: '#1e293b',
-                          border: 'none',
-                          borderRadius: 12,
-                          color: '#fff',
-                        }}
+                        contentStyle={TOOLTIP_STYLE}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -503,12 +726,7 @@ export default function Reports() {
                   <Tooltip
                     cursor={{ fill: '#ffffff11' }}
                     formatter={(v: number) => formatMoney(v)}
-                    contentStyle={{
-                      background: '#1e293b',
-                      border: 'none',
-                      borderRadius: 12,
-                      color: '#fff',
-                    }}
+                    contentStyle={TOOLTIP_STYLE}
                   />
                   <Legend
                     formatter={(value) =>
