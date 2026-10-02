@@ -35,6 +35,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
   const [installments, setInstallments] = useState(1)
   const [people, setPeople] = useState(1)
   const [owedNote, setOwedNote] = useState('')
+  const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -79,6 +80,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     setInstallments(1)
     setPeople(1)
     setOwedNote('')
+    setDescription('')
   }
 
   function changeQuickType(next: TransactionType) {
@@ -90,6 +92,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
     setInstallments(1)
     setPeople(1)
     setOwedNote('')
+    setDescription('')
     if (next === 'income') {
       const receivingAccount = accounts.find((a) => a.type !== 'card')
       setAccountId(receivingAccount?.id ?? '')
@@ -131,7 +134,7 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         account_id: account?.id ?? null,
         currency,
         ars_rate: rateFor(currency),
-        description: null,
+        description: description.trim() || null,
         type: quickType,
         // Gasto compartido: se manda si se eligió dividir con alguien más
         // (no aplica con cuotas, cada una ya es una parte del total).
@@ -255,6 +258,14 @@ export default function QuickAdd({ onSaved }: QuickAddProps) {
         ) : (
           <>
             <AmountKeypad value={amount} onChange={setAmount} />
+
+            <input
+              className="input mt-4"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Descripción (opcional)"
+              maxLength={120}
+            />
 
             {accounts.length > 0 && (
               <div className="mt-4">
